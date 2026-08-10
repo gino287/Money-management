@@ -48,6 +48,16 @@ async function cleanup() {
   await sql`delete from categories where name like ${MARK + '%'}`;
 }
 
+/** 收尾的清理失敗不該蓋掉真正的測試結果，也不該讓行程整個炸掉 */
+async function cleanupQuietly() {
+  try {
+    await cleanup();
+  } catch (e) {
+    console.log(`\n⚠ 清理測試資料時出錯：${e.message.split('\n')[0]}`);
+    console.log(`  資料庫裡可能留著帶 ${MARK} 的測試資料，下次跑會自動清掉。`);
+  }
+}
+
 const wait = (page, sel, timeout = 20000) =>
   page.locator(sel).first().waitFor({ state: 'visible', timeout });
 
@@ -76,7 +86,7 @@ const page = await context.newPage();
 page.on('pageerror', (e) => console.log('    [瀏覽器錯誤]', e.message.slice(0, 160)));
 
 try {
-  await cleanup();
+  await cleanupQuietly();
 
   console.log('\n【登入】');
   await page.goto(`${BASE}/transactions`, { waitUntil: 'domcontentloaded' });
@@ -262,9 +272,9 @@ try {
   console.log('\n✘ 腳本中斷：', e.message.split('\n')[0]);
   await page.screenshot({ path: 'screenshots/failure.png' }).catch(() => {});
 } finally {
-  await cleanup();
+  await cleanupQuietly();
   await browser.close();
-  await sql.end();
+  await sql.end({ timeout: 5 });
 }
 
 console.log(`\n${'='.repeat(50)}`);
