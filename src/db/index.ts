@@ -6,7 +6,13 @@ import * as schema from './schema';
 type Db = ReturnType<typeof drizzle<typeof schema>>;
 
 /**
- * 開發模式熱重載會重跑整個模組，用 globalThis 才留得住連線。
+ * 連線一律掛在 globalThis 上，正式環境也一樣。
+ *
+ * 常見寫法是「只有開發模式才快取，因為正式環境模組只會載入一次」，
+ * 但那個前提在這裡不成立：打包後 RSC 與 SSR 是不同的 chunk，這支模組
+ * 會被實體化不只一次，每一份都自己開一組連線池。連線就這樣一直累積，
+ * 直到 pooler 滿了開始讓人排隊 —— 症狀是伺服器剛開沒事，用一下之後
+ * 每一頁都無限轉圈，重開 node 又好了。
  */
 const globalForDb = globalThis as unknown as { client?: ReturnType<typeof postgres>; db?: Db };
 
@@ -57,10 +63,8 @@ function connect(): Db {
   const instance = drizzle(client, { schema });
 
   cached = instance;
-  if (process.env.NODE_ENV !== 'production') {
-    globalForDb.client = client;
-    globalForDb.db = instance;
-  }
+  globalForDb.client = client;
+  globalForDb.db = instance;
   return instance;
 }
 
