@@ -1,26 +1,89 @@
 @import "tailwindcss";
 
+/*
+ * 深色為主的配色。規格書要求「有質感、稍微酷一點，不是死板的企業報表感」，
+ * 但金額必須第一眼讀得準，所以顏色只用在狀態標記，數字本身一律高對比。
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #0b0d10;
+  --surface: #14171c;
+  --surface-2: #1c2027;
+  --border: #262b33;
+  --border-strong: #363d47;
+
+  --text: #e8eaed;
+  --text-muted: #9aa3af;
+  --text-faint: #6b7480;
+
+  --accent: #6ee7b7;
+  --accent-dim: #0f2f26;
+
+  --expense: #f4a3a3;
+  --income: #7dd3a8;
+  --advance: #c4a3f4;
+  --estimated: #f0c674;
+
+  --radius: 0.75rem;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-expense: var(--expense);
+  --color-income: var(--income);
+  --color-advance: var(--advance);
+  --color-estimated: var(--estimated);
+  --radius-card: var(--radius);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  border-color: var(--border);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, "Noto Sans TC", "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* iPhone 從主畫面開啟時，避免瀏覽器把整頁上下拉動 */
+  overscroll-behavior-y: none;
+}
+
+/* 金額用等寬數字，列表縱向對齊才不會跳動 */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* iOS Safari 對 font-size < 16px 的輸入框會自動放大整頁，很惱人 */
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+
+@media (min-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 0.875rem;
+  }
+}
+
+input[type="date"] {
+  color-scheme: dark;
+}
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--accent);
 }
