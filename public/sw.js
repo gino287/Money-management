@@ -12,10 +12,10 @@ const STATIC_CACHE = `static-${VERSION}`;
 const OFFLINE_URL = '/offline';
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(STATIC_CACHE).then((cache) => cache.addAll([OFFLINE_URL])),
-  );
-  self.skipWaiting();
+  event.waitUntil(caches.open(STATIC_CACHE).then((cache) => cache.add(OFFLINE_URL)));
+  // 這裡刻意不呼叫 skipWaiting()：新版 service worker 中途接管頁面，
+  // 會打斷正在進行的用戶端導頁（登入完成後畫面換不過去就是這樣來的）。
+  // 讓它等下次開啟再生效就好。
 });
 
 self.addEventListener('activate', (event) => {
@@ -24,9 +24,9 @@ self.addEventListener('activate', (event) => {
       .keys()
       .then((keys) =>
         Promise.all(keys.filter((key) => !key.endsWith(VERSION)).map((key) => caches.delete(key))),
-      )
-      .then(() => self.clients.claim()),
+      ),
   );
+  // 同理不呼叫 clients.claim()
 });
 
 self.addEventListener('fetch', (event) => {

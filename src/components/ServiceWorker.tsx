@@ -8,9 +8,18 @@ export function ServiceWorker() {
     // 開發模式註冊 SW 會讓熱重載行為變得難以預測
     if (process.env.NODE_ENV !== 'production') return;
 
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // 註冊失敗不影響使用，安靜略過
-    });
+    // 等頁面載完再註冊，避免安裝時的預先快取跟首屏搶頻寬
+    const register = () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {
+        // 註冊失敗不影響使用，安靜略過
+      });
+    };
+
+    if (document.readyState === 'complete') register();
+    else {
+      window.addEventListener('load', register, { once: true });
+      return () => window.removeEventListener('load', register);
+    }
   }, []);
 
   return null;

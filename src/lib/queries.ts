@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, ilike, lt, sql } from 'drizzle-orm';
+import { cache } from 'react';
 
 import { db } from '@/db';
 import {
@@ -37,13 +38,17 @@ const transactionSelect = {
   categoryName: categories.name,
 };
 
-export async function getCategories(opts: { activeOnly?: boolean } = {}) {
+/**
+ * 用 React 的 cache 包起來，同一次請求裡 layout 跟 page 都要用時只會查一次。
+ * 連線池只有一條，少一次往返就少一次排隊。
+ */
+export const getCategories = cache(async (opts: { activeOnly?: boolean } = {}) => {
   return db
     .select()
     .from(categories)
     .where(opts.activeOnly ? eq(categories.isActive, true) : undefined)
     .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name));
-}
+});
 
 export type TransactionFilters = {
   month?: string;
@@ -146,13 +151,13 @@ export async function getCategoryUsage(): Promise<Map<string, number>> {
   return new Map(rows.map((r) => [r.categoryId, r.count]));
 }
 
-export async function getSettlements(status?: 'open' | 'settled') {
+export const getSettlements = cache(async (status?: 'open' | 'settled') => {
   return db
     .select()
     .from(settlements)
     .where(status ? eq(settlements.status, status) : undefined)
     .orderBy(asc(settlements.status), desc(settlements.openedAt));
-}
+});
 
 /** 分類的預設 isFixed，新增交易時用來帶值 */
 export async function getCategory(id: string) {

@@ -1,5 +1,4 @@
 import { toggleCategoryActive, toggleCategoryFixed } from '@/app/actions/categories';
-import { logout } from '@/app/login/actions';
 import { CategoryForm } from '@/components/CategoryForm';
 import { CategoryName } from '@/components/CategoryName';
 import { getCategories, getCategoryUsage } from '@/lib/queries';
@@ -84,7 +83,7 @@ export default async function CategoriesPage() {
         </section>
       ))}
 
-      <form action={logout} className="border-t border-border pt-5">
+      <form method="post" action="/api/logout" className="border-t border-border pt-5">
         <button
           type="submit"
           className="w-full py-2 text-center text-xs text-text-faint transition-colors hover:text-text-muted"
