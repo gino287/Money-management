@@ -1,7 +1,17 @@
 'use client';
 
 import Link from 'next/link';
+import { useLinkStatus } from 'next/link';
 import { usePathname } from 'next/navigation';
+
+/** 點下去到新頁面畫出來之間，先讓被點的那一項亮起來，不要讓人以為沒按到 */
+function Pending() {
+  const { pending } = useLinkStatus();
+  if (!pending) return null;
+  return (
+    <span className="absolute inset-x-0 -bottom-px mx-auto h-px w-8 animate-pulse bg-accent sm:inset-x-auto sm:bottom-0" />
+  );
+}
 
 const LINKS = [
   { href: '/', label: '記帳' },
@@ -39,6 +49,7 @@ export function Nav({ openCount }: { openCount: number }) {
               {active && (
                 <span className="absolute inset-x-0 top-0 mx-auto h-px w-8 bg-accent sm:top-auto sm:bottom-0" />
               )}
+              <Pending />
             </Link>
           );
         })}
