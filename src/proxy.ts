@@ -8,8 +8,11 @@ export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const isLoginPage = pathname === '/login';
 
-  // 登入端點本身當然不能被登入檢查擋住，否則永遠登不進來
-  if (pathname === '/api/login' || pathname === '/api/logout') return NextResponse.next();
+  // 登入端點本身當然不能被登入檢查擋住，否則永遠登不進來。
+  // health 是診斷用，登不進去的時候才最需要它，所以也放行。
+  if (pathname === '/api/login' || pathname === '/api/logout' || pathname === '/api/health') {
+    return NextResponse.next();
+  }
 
   if (isLoggedIn) {
     // 已登入還跑到登入頁就直接送回首頁
