@@ -6,10 +6,9 @@ import { getCategories, getCategoryUsage } from '@/lib/queries';
 export const dynamic = 'force-dynamic';
 
 export default async function CategoriesPage() {
-  const [categories, usage] = await Promise.all([
-    getCategories({ activeOnly: false }),
-    getCategoryUsage(),
-  ]);
+  // 排隊查，不要一次開好幾條新連線（見首頁那段註解）
+  const categories = await getCategories({ activeOnly: false });
+  const usage = await getCategoryUsage();
 
   const groups = [
     { kind: 'expense' as const, label: '支出' },

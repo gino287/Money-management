@@ -61,6 +61,12 @@ async function cleanupQuietly() {
 const wait = (page, sel, timeout = 20000) =>
   page.locator(sel).first().waitFor({ state: 'visible', timeout });
 
+/** 「備註與標記」預設收起來，要先打開才點得到裡面的東西 */
+async function openMarks(page) {
+  const marks = page.locator('form details').first();
+  if (!(await marks.evaluate((el) => el.open))) await marks.locator('summary').click();
+}
+
 /** 用首頁表單記一筆，走 Gino 真正會走的路徑 */
 async function record(page, e) {
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
@@ -69,12 +75,15 @@ async function record(page, e) {
   if (e.kind && e.kind !== '支出') {
     await page.getByRole('button', { name: e.kind, exact: true }).click();
   }
-  if (e.communal) await page.getByLabel('開伙').check();
+  // 開伙是表單上的一種性質（存進資料庫仍是 expense + is_communal）
+  if (e.communal) await page.getByRole('button', { name: '開伙', exact: true }).click();
   else await page.getByPlaceholder('0', { exact: true }).fill(String(e.amount));
-  if (e.estimated) await page.getByLabel('估算金額').check();
 
   // 固定支出的分類按鈕名稱後面還跟著「固定」標籤，不能用 exact 比對
   await page.getByRole('button', { name: e.category }).first().click();
+
+  await openMarks(page);
+  if (e.estimated) await page.getByLabel('估算金額').check();
   await page.getByPlaceholder('備註（可留空）').fill(`${MARK} ${e.note}`);
   await page.getByRole('button', { name: '記一筆' }).click();
   await page.getByText('記好了').waitFor({ timeout: 25000 });
@@ -102,6 +111,24 @@ try {
   await page.getByRole('link', { name: '明細' }).waitFor({ timeout: 25000 });
   check('密碼正確後回到原本要去的頁面', page.url().endsWith('/transactions'));
 
+  /**
+   * 月結算的期望值要以「你原本就有的帳」為基準往上加。
+   * 寫死 950 那種寫法只有在當月完全沒帳時才成立，
+   * 你八月本來就有幾筆，腳本會誤判成程式壞掉。
+   */
+  const [base] = await sql`
+    select
+      coalesce(sum(amount) filter (where kind = 'expense' and not is_fixed), 0)::float8 as variable,
+      coalesce(sum(amount) filter (where kind = 'expense' and is_fixed), 0)::float8 as fixed,
+      coalesce(sum(amount) filter (where kind = 'income'), 0)::float8 as income,
+      coalesce(sum(amount) filter (where kind = 'advance'), 0)::float8 as advance,
+      count(*) filter (where is_communal)::int as communal
+    from transactions
+    where date >= date_trunc('month', (now() at time zone 'Asia/Taipei'))::date
+      and date < (date_trunc('month', (now() at time zone 'Asia/Taipei')) + interval '1 month')::date`;
+
+  const money = (n) => new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 2 }).format(n);
+
   console.log('\n【記帳：五種性質】');
   await record(page, { category: '餐食', amount: 150, note: '午餐' });
   await record(page, { category: '房租', amount: 6000, note: '房租' });
@@ -126,18 +153,35 @@ try {
   console.log('\n【月結算：固定／變動／暫付款分開】');
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
-  const summary = await page.locator('dl').first().innerText();
-  check('變動支出 950（150+800，開伙 0 不影響）', summary.includes('950'), summary.replace(/\n/g, ' '));
-  check('固定支出 6,000 獨立顯示', summary.includes('6,000'));
-  check('收入 12,000', summary.includes('12,000'));
-  check('暫付款 500 不併入支出', summary.includes('500'));
-  check('本月開伙次數看得到', (await page.getByText('本月開伙 1 次').count()) === 1);
+  const summary = await page.getByTestId('month-summary').innerText();
+  const seen = summary.split('|').join(' ');
+  check(
+    `變動支出 ${money(base.variable + 950)}（原有 ${money(base.variable)} 再加 150、800，開伙 0 不影響）`,
+    summary.includes(money(base.variable + 950)),
+    seen,
+  );
+  check(
+    `固定支出 ${money(base.fixed + 6000)} 獨立顯示`,
+    summary.includes(money(base.fixed + 6000)),
+    seen,
+  );
+  check(`收入 ${money(base.income + 12000)}`, summary.includes(money(base.income + 12000)), seen);
+  check(
+    `暫付款 ${money(base.advance + 500)} 不併入支出`,
+    summary.includes(money(base.advance + 500)),
+    seen,
+  );
+  check(
+    `開伙次數看得到（${base.communal + 1} 次）`,
+    (await page.getByText(`開伙 ${base.communal + 1} 次`).count()) === 1,
+  );
 
   console.log('\n【事後修正：估算改實際，留稽核】');
   await page.goto(`${BASE}/transactions`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('link', { name: /估算/ }).first().click();
   await page.getByPlaceholder('0', { exact: true }).waitFor({ timeout: 20000 });
   await page.getByPlaceholder('0', { exact: true }).fill('1250');
+  await openMarks(page);
   await page.getByLabel('估算金額').uncheck();
   await page.getByRole('button', { name: '儲存修改' }).click();
   await page.waitForURL('**/transactions', { timeout: 25000 });
@@ -211,17 +255,29 @@ try {
     (await page.getByText(`${MARK}臨時分類`).count()) > 0,
   );
 
-  console.log('\n【明細篩選】');
+  console.log('');
+  console.log('【明細篩選】');
+  /**
+   * 定位一律限定在清單的 li 裡面。
+   * 「篩選」收合區裡也有一顆叫「工讀薪水」的分類按鈕，它是收起來的、永遠不可見，
+   * 直接用 getByText('薪水').first() 會抓到那顆，然後一路等到逾時。
+   */
+  const listItem = (text) => page.locator('li').filter({ hasText: text });
+
   await page.goto(`${BASE}/transactions`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('link', { name: '收入', exact: true }).click();
-  await page.getByText('薪水').first().waitFor({ timeout: 25000 });
-  check('依性質篩選只留收入', (await page.getByText('午餐').count()) === 0);
+  // 一定要等網址真的換過去。分頁是普通的 <a>，點下去到頁面換掉之間有空窗，
+  // 沒等的話會在「還沒篩選」的清單上做檢查，然後得到看起來像壞掉的結果。
+  await page.waitForURL(/kind=income/, { timeout: 25000 });
+  await listItem('薪水').first().waitFor({ timeout: 25000 });
+  check('依性質篩選只留收入', (await listItem('午餐').count()) === 0);
 
   await page.goto(`${BASE}/transactions?q=${encodeURIComponent('午餐')}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.getByText('午餐').first().waitFor({ timeout: 25000 });
-  check('備註搜尋找得到', (await page.getByText('薪水').count()) === 0);
+  await listItem('午餐').first().waitFor({ timeout: 25000 });
+  check('備註搜尋找得到', (await listItem('薪水').count()) === 0);
+
 
   console.log('\n【表單驗證】');
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });

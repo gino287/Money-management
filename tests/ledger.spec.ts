@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-import { categoryButton, cleanup, login, MARK, record, sql } from './helpers';
+import { categoryButton, cleanup, login, MARK, openFilters, record, sql } from './helpers';
 
 /**
  * 驗收清單來自實作計畫的「驗收方式」一節。
@@ -64,11 +64,11 @@ test('五種性質的帳都記得起來，月結算分開計算', async ({ page 
 
   // 畫面層：暫付款不可以被算進支出
   await page.goto('/');
-  const summary = page.locator('dl').first();
+  const summary = page.getByTestId('month-summary');
   await expect(summary).toContainText('6,000'); // 固定支出
   await expect(summary).toContainText('12,000'); // 收入
   await expect(summary).toContainText('500'); // 暫付款獨立一格
-  await expect(page.getByText('本月開伙 1 次')).toBeVisible();
+  await expect(page.getByText('開伙 1 次')).toBeVisible();
 
   // 變動支出 = 150 + 800，開伙的 0 不影響，暫付款 500 不併入
   await expect(summary).toContainText('950');
@@ -165,6 +165,7 @@ test('明細可以依性質與備註篩選，合計跟著篩選走', async ({ pa
   await expect(page.getByText('篩選用午餐')).toHaveCount(0);
 
   await page.goto('/transactions');
+  await openFilters(page);
   await page.getByPlaceholder('搜尋備註').fill('篩選用午餐');
   await page.getByRole('button', { name: '搜尋' }).click();
   await expect(page.getByText('篩選用午餐')).toBeVisible();

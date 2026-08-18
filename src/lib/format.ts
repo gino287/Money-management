@@ -44,6 +44,12 @@ export function formatMonth(month: string): string {
   return `${y} 年 ${Number(m)} 月`;
 }
 
+/** 卡片上用的短月份，今年就不顯示年份 */
+export function formatMonthShort(month: string): string {
+  const [y, m] = month.split('-');
+  return y === todayISO().slice(0, 4) ? `${Number(m)} 月` : `${y} 年 ${Number(m)} 月`;
+}
+
 /** 列表用的短日期，同年就不顯示年份 */
 export function formatDate(iso: string): string {
   const [y, m, d] = iso.split('-');

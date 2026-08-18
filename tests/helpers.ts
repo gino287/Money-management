@@ -40,6 +40,22 @@ export function categoryButton(page: Page, name: string) {
   return page.getByRole('button', { name, exact: false });
 }
 
+/** 明細頁的搜尋與分類篩選也是收起來的，同上 */
+export async function openFilters(page: Page) {
+  const filters = page.locator('details').first();
+  if (!(await filters.evaluate((el) => (el as HTMLDetailsElement).open))) {
+    await filters.locator('summary').click();
+  }
+}
+
+/** 備註與標記預設是收起來的，要先打開才點得到裡面的東西 */
+export async function openMarks(page: Page) {
+  const marks = page.locator('form details').first();
+  if (!(await marks.evaluate((el) => (el as HTMLDetailsElement).open))) {
+    await marks.locator('summary').click();
+  }
+}
+
 type Entry = {
   kind?: '支出' | '收入' | '暫付款';
   amount?: string;
@@ -60,14 +76,17 @@ export async function record(page: Page, entry: Entry) {
   if (entry.date && entry.date !== '今天') {
     await page.getByRole('button', { name: entry.date, exact: true }).click();
   }
+  // 開伙是表單上的一種性質（存進資料庫仍是 expense + is_communal）
   if (entry.communal) {
-    await page.getByLabel('開伙').check();
+    await page.getByRole('button', { name: '開伙', exact: true }).click();
   } else {
     await page.getByPlaceholder('0', { exact: true }).fill(entry.amount!);
   }
-  if (entry.estimated) await page.getByLabel('估算金額').check();
 
   await categoryButton(page, entry.category).click();
+
+  await openMarks(page);
+  if (entry.estimated) await page.getByLabel('估算金額').check();
   await page.getByPlaceholder('備註（可留空）').fill(`${MARK} ${entry.note}`);
   await page.getByRole('button', { name: '記一筆' }).click();
 

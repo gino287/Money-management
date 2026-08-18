@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, ilike, lt, sql } from 'drizzle-orm';
 import { cache } from 'react';
 
-import { db } from '@/db';
+import { db, dbGeneration, resetDb } from '@/db';
 import {
   categories,
   settlements,
@@ -25,6 +25,68 @@ export type TransactionRow = {
   categoryName: string;
 };
 
+/**
+ * 讀取查詢的保命包裝。
+ *
+ * 走 Supabase 的 pooler 時，偶爾會發生「查詢送出去了、回應永遠不回來」——
+ * 資料庫端其實沒有在跑那支查詢（用 pg_stat_activity 查過是空的），
+ * 但程式這邊會一直等，等到資料庫兩分鐘的 statement timeout 才收到錯誤。
+ * 使用者看到的就是一片黑、一直轉。
+ *
+ * 所以自己設一道 3 秒上限：超過就放棄，整組連線丟掉重建，再重試一次。
+ * 正常查詢在 Vercel 上是個位數毫秒、在家裡的電腦上是四十幾毫秒，
+ * 最慢的一次（全新連線 + 冷啟動）也不到 1 秒，
+ * 所以 3 秒代表「這條連線已經死了」，不是「資料庫很忙」。
+ *
+ * 「死了」不是誇飾：實測過把重建關掉，那些逾時的查詢一支都沒有回來過，
+ * 連遲到都沒有。而且整個池子會一起死，連 /api/health 都不回。
+ * 有重建的時候驗收腳本 29/30 通過，關掉重建只跑得完 3 項。
+ *
+ * 只包讀取。寫入不能這樣重試 —— 沒收到回應不代表沒寫進去，重試會變成記兩筆。
+ */
+const READ_TIMEOUT_MS = 3_000;
+
+async function read<T>(label: string, run: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const generation = dbGeneration();
+    const startedAt = Date.now();
+    let gaveUp = false;
+    const running = run();
+    // 被放棄的那一支之後才失敗的話，不能讓它變成沒人接的 rejection 把行程打掛。
+    // 順便留一行紀錄：知道它到底是「慢」還是「真的永遠不回來」，差很多。
+    running.then(
+      () => {
+        if (gaveUp) console.warn(`[db] ${label} 在放棄後第 ${Date.now() - startedAt}ms 才回來`);
+      },
+      (error) => {
+        if (gaveUp) {
+          console.warn(
+            `[db] ${label} 在放棄後第 ${Date.now() - startedAt}ms 才失敗：${(error as Error).message.slice(0, 60)}`,
+          );
+        }
+      },
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        running,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`查詢逾時（${label}）`)), READ_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (error) {
+      gaveUp = true;
+      if (attempt >= 2) throw error;
+      console.warn(`[db] ${label} 失敗，重試一次：${(error as Error).message.slice(0, 100)}`);
+      // 重試不能再用同一批連線 —— 壞掉的通常是整組，不是剛好那一條
+      resetDb(generation, `${label} 沒有回應`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
 const transactionSelect = {
   id: transactions.id,
   date: transactions.date,
@@ -40,14 +102,16 @@ const transactionSelect = {
 
 /**
  * 用 React 的 cache 包起來，同一次請求裡 layout 跟 page 都要用時只會查一次。
- * 連線池只有一條，少一次往返就少一次排隊。
+ * 少一支查詢就少一條連線，首頁一次要查好幾樣，這件事有差。
  */
 export const getCategories = cache(async (opts: { activeOnly?: boolean } = {}) => {
-  return db
-    .select()
-    .from(categories)
-    .where(opts.activeOnly ? eq(categories.isActive, true) : undefined)
-    .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name));
+  return read('分類清單', () =>
+    db
+      .select()
+      .from(categories)
+      .where(opts.activeOnly ? eq(categories.isActive, true) : undefined)
+      .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name)),
+  );
 });
 
 export type TransactionFilters = {
@@ -81,16 +145,18 @@ export async function getTransactions(
     // 同一天記的多筆按建立時間排，補記時順序才符合直覺
     .orderBy(desc(transactions.date), desc(transactions.createdAt));
 
-  return limit ? query.limit(limit) : query;
+  return read('交易明細', () => (limit ? query.limit(limit) : query));
 }
 
 export async function getTransaction(id: string): Promise<TransactionRow | undefined> {
-  const [row] = await db
-    .select(transactionSelect)
-    .from(transactions)
-    .innerJoin(categories, eq(transactions.categoryId, categories.id))
-    .where(eq(transactions.id, id))
-    .limit(1);
+  const [row] = await read('單筆交易', () =>
+    db
+      .select(transactionSelect)
+      .from(transactions)
+      .innerJoin(categories, eq(transactions.categoryId, categories.id))
+      .where(eq(transactions.id, id))
+      .limit(1),
+  );
   return row;
 }
 
@@ -140,28 +206,34 @@ export function summarize(rows: TransactionRow[]): MonthSummary {
 
 /** 給分類管理頁顯示「這個分類用過幾次」，判斷能不能安心停用 */
 export async function getCategoryUsage(): Promise<Map<string, number>> {
-  const rows = await db
-    .select({
-      categoryId: transactions.categoryId,
-      count: sql<number>`count(*)`.mapWith(Number),
-    })
-    .from(transactions)
-    .groupBy(transactions.categoryId);
+  const rows = await read('分類使用次數', () =>
+    db
+      .select({
+        categoryId: transactions.categoryId,
+        count: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(transactions)
+      .groupBy(transactions.categoryId),
+  );
 
   return new Map(rows.map((r) => [r.categoryId, r.count]));
 }
 
 export const getSettlements = cache(async (status?: 'open' | 'settled') => {
-  return db
-    .select()
-    .from(settlements)
-    .where(status ? eq(settlements.status, status) : undefined)
-    .orderBy(asc(settlements.status), desc(settlements.openedAt));
+  return read('待結清清單', () =>
+    db
+      .select()
+      .from(settlements)
+      .where(status ? eq(settlements.status, status) : undefined)
+      .orderBy(asc(settlements.status), desc(settlements.openedAt)),
+  );
 });
 
 /** 分類的預設 isFixed，新增交易時用來帶值 */
 export async function getCategory(id: string) {
-  const [row] = await db.select().from(categories).where(eq(categories.id, id)).limit(1);
+  const [row] = await read('單一分類', () =>
+    db.select().from(categories).where(eq(categories.id, id)).limit(1),
+  );
   return row;
 }
 

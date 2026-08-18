@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { MonthSummary } from '@/components/MonthSummary';
 import { TransactionList } from '@/components/TransactionList';
 import type { TransactionKind } from '@/db/schema';
-import { currentMonth, formatMonth, shiftMonth } from '@/lib/format';
+import { currentMonth, formatMonth, formatMonthShort, shiftMonth } from '@/lib/format';
 import { getCategories, getTransactions, summarize } from '@/lib/queries';
 
 export const dynamic = 'force-dynamic';
@@ -25,16 +25,15 @@ export default async function TransactionsPage({ searchParams }: PageProps<'/tra
   const search = one(params.q) ?? '';
   const estimatedOnly = one(params.estimated) === '1';
 
-  const [categories, rows] = await Promise.all([
-    getCategories({ activeOnly: false }),
-    getTransactions({
-      month,
-      kind: kind || undefined,
-      categoryId: categoryId || undefined,
-      search: search || undefined,
-      estimatedOnly,
-    }),
-  ]);
+  // 同上，排隊查，不要一次開好幾條新連線（見首頁那段註解）
+  const categories = await getCategories({ activeOnly: false });
+  const rows = await getTransactions({
+    month,
+    kind: kind || undefined,
+    categoryId: categoryId || undefined,
+    search: search || undefined,
+    estimatedOnly,
+  });
 
   // 保留其他條件、只改一個參數的網址
   const urlWith = (patch: Record<string, string | undefined>) => {
@@ -69,16 +68,16 @@ export default async function TransactionsPage({ searchParams }: PageProps<'/tra
       </div>
 
       {/* 篩選後的合計要跟著篩選走，不然數字對不上眼前的清單 */}
-      <MonthSummary summary={summarize(rows)} />
+      <MonthSummary summary={summarize(rows)} label={filtered ? '篩選後' : formatMonthShort(month)} />
 
       <div className="space-y-2">
-        <div className="flex gap-1 rounded-[var(--radius)] bg-surface p-1">
+        <div className="flex gap-1 rounded-[var(--radius)] bg-surface-2 p-1">
           {KIND_TABS.map((tab) => (
             <Link
               key={tab.value}
               href={urlWith({ kind: tab.value || undefined })}
               className={`flex-1 rounded-[calc(var(--radius)-0.25rem)] py-1.5 text-center text-sm transition-colors ${
-                kind === tab.value ? 'bg-surface-2 text-text' : 'text-text-muted hover:text-text'
+                kind === tab.value ? 'bg-bg text-text' : 'text-text-muted hover:text-text'
               }`}
             >
               {tab.label}
@@ -86,45 +85,97 @@ export default async function TransactionsPage({ searchParams }: PageProps<'/tra
           ))}
         </div>
 
-        <form action="/transactions" className="flex gap-2">
-          <input type="hidden" name="month" value={month} />
-          {kind && <input type="hidden" name="kind" value={kind} />}
-          <input
-            name="q"
-            defaultValue={search}
-            placeholder="搜尋備註"
-            className="min-w-0 flex-1 rounded-[var(--radius)] border border-border bg-surface px-3 py-2 outline-none focus:border-border-strong"
-          />
-          <button
-            type="submit"
-            className="shrink-0 rounded-[var(--radius)] border border-border px-4 text-sm text-text-muted transition-colors hover:text-text"
-          >
-            搜尋
-          </button>
-        </form>
+        {/*
+          搜尋跟分類篩選收起來。翻明細大多只是想看這個月花了什麼，
+          十次有九次不會用到這些，攤開來只是把清單擠到螢幕外面。
+        */}
+        <details
+          className="group overflow-hidden rounded-[var(--radius)] border border-border bg-surface"
+          open={Boolean(categoryId || search || estimatedOnly)}
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-2.5 text-sm text-text-muted">
+            <span>
+              篩選
+              {(categoryId || search || estimatedOnly) && (
+                <span className="ml-2 text-xs text-accent">使用中</span>
+              )}
+            </span>
+            <span className="text-xs text-text-faint transition-transform group-open:rotate-180">
+              ▾
+            </span>
+          </summary>
 
-        <div className="flex flex-wrap gap-1.5">
-          <Chip href={urlWith({ estimated: estimatedOnly ? undefined : '1' })} active={estimatedOnly}>
-            只看估算
-          </Chip>
-          {categories
-            .filter((c) => c.isActive || c.id === categoryId)
-            .map((c) => (
-              <Chip
-                key={c.id}
-                href={urlWith({ category: categoryId === c.id ? undefined : c.id })}
-                active={categoryId === c.id}
+          <div className="space-y-3 border-t border-border px-4 py-3.5">
+            <form action="/transactions" className="flex gap-2">
+              <input type="hidden" name="month" value={month} />
+              {kind && <input type="hidden" name="kind" value={kind} />}
+              <input
+                name="q"
+                defaultValue={search}
+                placeholder="搜尋備註"
+                className="min-w-0 flex-1 rounded-[var(--radius)] border border-border bg-bg px-3 py-2 outline-none focus:border-border-strong"
+              />
+              <button
+                type="submit"
+                className="shrink-0 rounded-[var(--radius)] border border-border px-4 text-sm text-text-muted transition-colors hover:text-text"
               >
-                {c.name}
-              </Chip>
-            ))}
-        </div>
+                搜尋
+              </button>
+            </form>
 
-        {filtered && (
-          <Link href={urlWith({ kind: undefined, category: undefined, q: undefined, estimated: undefined })} className="inline-block px-1 text-xs text-text-faint hover:text-text-muted">
-            清除篩選
-          </Link>
-        )}
+            <div className="flex flex-wrap gap-1.5">
+              <Chip
+                href={urlWith({ estimated: estimatedOnly ? undefined : '1' })}
+                active={estimatedOnly}
+              >
+                只看估算
+              </Chip>
+            </div>
+
+            {/*
+              支出與收入的分類分開列。兩邊都有一個叫「未分類」的分類，
+              混在同一排會變成兩顆長得一樣的按鈕，看起來像壞掉。
+            */}
+            {(['expense', 'income'] as const).map((group) => {
+              const list = categories.filter(
+                (c) => c.kind === group && (c.isActive || c.id === categoryId),
+              );
+              if (list.length === 0) return null;
+              return (
+                <div key={group}>
+                  <p className="mb-1.5 text-xs text-text-faint">
+                    {group === 'expense' ? '支出分類' : '收入分類'}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {list.map((c) => (
+                      <Chip
+                        key={c.id}
+                        href={urlWith({ category: categoryId === c.id ? undefined : c.id })}
+                        active={categoryId === c.id}
+                      >
+                        {c.name}
+                      </Chip>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+
+            {filtered && (
+              <Link
+                href={urlWith({
+                  kind: undefined,
+                  category: undefined,
+                  q: undefined,
+                  estimated: undefined,
+                })}
+                className="inline-block text-xs text-text-faint hover:text-text-muted"
+              >
+                清除篩選
+              </Link>
+            )}
+          </div>
+        </details>
       </div>
 
       <TransactionList

@@ -14,15 +14,14 @@ export const dynamic = 'force-dynamic';
 export default async function EditTransactionPage({ params }: PageProps<'/transactions/[id]'>) {
   const { id } = await params;
 
-  const [row, categories, revisions] = await Promise.all([
-    getTransaction(id),
-    getCategories({ activeOnly: false }),
-    db
-      .select()
-      .from(transactionRevisions)
-      .where(eq(transactionRevisions.transactionId, id))
-      .orderBy(desc(transactionRevisions.changedAt)),
-  ]);
+  // 排隊查，不要一次開好幾條新連線（見首頁那段註解）
+  const row = await getTransaction(id);
+  const categories = await getCategories({ activeOnly: false });
+  const revisions = await db
+    .select()
+    .from(transactionRevisions)
+    .where(eq(transactionRevisions.transactionId, id))
+    .orderBy(desc(transactionRevisions.changedAt));
 
   if (!row) notFound();
 

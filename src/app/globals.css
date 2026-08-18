@@ -58,6 +58,19 @@ body {
   overscroll-behavior-y: none;
 }
 
+/*
+ * iPhone 從主畫面開啟時是全螢幕（status bar 疊在畫面上），
+ * 內容如果貼齊最上緣就會被時間、訊號、電量圖示蓋掉。
+ * 每一個「整頁的最外層」都要用這兩個 class 把安全區墊出來。
+ */
+.pad-top {
+  padding-top: calc(env(safe-area-inset-top, 0px) + 1rem);
+}
+
+.pad-bottom {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1.5rem);
+}
+
 /* 金額用等寬數字，列表縱向對齊才不會跳動 */
 .tabular {
   font-variant-numeric: tabular-nums;

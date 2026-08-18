@@ -4,7 +4,7 @@ export default async function LoginPage({ searchParams }: PageProps<'/login'>) {
   const { next, e } = await searchParams;
 
   return (
-    <main className="flex min-h-dvh flex-col items-center justify-center px-6">
+    <main className="pad-top pad-bottom flex min-h-dvh flex-col items-center justify-center px-6">
       <div className="w-full max-w-xs">
         <div className="mb-10 text-center">
           <div className="mb-3 text-4xl">◈</div>

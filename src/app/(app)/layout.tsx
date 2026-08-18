@@ -10,7 +10,11 @@ export default async function AppLayout({ children }: LayoutProps<'/'>) {
 
   return (
     <div className="flex min-h-dvh flex-col sm:flex-col-reverse sm:justify-end">
-      <main className="mx-auto w-full max-w-2xl flex-1 px-4 pt-5 pb-8">{children}</main>
+      {/*
+        pad-top 是 iPhone 的安全區。從主畫面開啟時是全螢幕，
+        沒墊這一段的話最上面那一行會被時間、訊號、電量圖示壓到。
+      */}
+      <main className="pad-top mx-auto w-full max-w-2xl flex-1 px-4 pb-10">{children}</main>
       <Nav openCount={open.length} />
     </div>
   );
