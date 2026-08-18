@@ -1,6 +1,16 @@
 # 記帳
 
-Gino 的個人記帳系統。規則看 `記帳系統_規格書.md`，技術決定與分期看 `實作計畫.md`。
+Gino 的個人記帳系統。
+
+> **想知道「上次做到哪、改了什麼」看 [`Gino.md`](Gino.md)。**
+> 這一份只講「怎麼裝起來、怎麼部署」。
+
+| 文件 | 內容 |
+|---|---|
+| [`Gino.md`](Gino.md) | 白話進度紀錄，隔一陣子回來先看這個 |
+| [`docs/規格書.md`](docs/規格書.md) | 記帳規則，不能亂改的那些 |
+| [`docs/實作計畫.md`](docs/實作計畫.md) | 技術決定與分期 |
+| [`docs/踩過的雷.md`](docs/踩過的雷.md) | 已經查過的坑，別再踩一次 |
 
 ---
 
@@ -81,6 +91,24 @@ npm run dev
 | `npm run db:seed` | 灌預設分類（重跑不會覆蓋既有的） |
 | `npm run db:studio` | 開瀏覽器直接看／改資料庫內容 |
 | `node scripts/make-icons.mjs` | 重新產生 PWA 圖示（改了設計才需要） |
+| `node scripts/verify.mjs` | 自動走一遍驗收清單（要先 `npm run build && npm run start`） |
+
+---
+
+## 資料夾
+
+```
+src/app/          頁面（(app)/ 是登入後的，login/ offline/ 是登入前的）
+src/app/actions/  寫入資料的 Server Action
+src/components/   畫面元件
+src/db/           資料表定義與種子資料
+src/lib/          查詢（queries.ts）、日期與金額格式（format.ts）、登入（auth.ts）
+scripts/          驗收腳本、圖示產生器
+tests/            Playwright 測試
+docs/             規格書、實作計畫、踩過的雷
+```
+
+寫程式前先看 `AGENTS.md`：讀取放 `src/lib/queries.ts`、寫入放 `src/app/actions/`，這條界線不要跨。
 
 ---
 
