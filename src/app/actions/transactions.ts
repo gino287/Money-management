@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 
 import { db } from '@/db';
 import {
+  rawInputs,
   transactionRevisions,
   transactions,
   TRANSACTION_KINDS,
@@ -79,6 +80,18 @@ async function parse(formData: FormData): Promise<ParsedInput | string> {
   };
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * 這筆是不是從口語輸入來的。只認 uuid 格式，實際存不存在交給外鍵擋 ——
+ * 為了一個來源欄位多查一次資料庫不划算，而且首頁的連線數本來就緊（見 src/db/index.ts）。
+ * 只在 createTransaction 用：事後編輯不該把原本的來源改掉。
+ */
+function rawInputIdOf(formData: FormData): string | null {
+  const value = String(formData.get('rawInputId') ?? '');
+  return UUID.test(value) ? value : null;
+}
+
 /** 稽核只留會影響帳目的欄位，時間戳與來源不進去，否則每筆 diff 都被雜訊淹沒 */
 function snapshot(row: Transaction) {
   return {
@@ -106,7 +119,20 @@ export async function createTransaction(
   const parsed = await parse(formData);
   if (typeof parsed === 'string') return { error: parsed };
 
-  await db.insert(transactions).values({ ...parsed, source: 'manual' });
+  const rawInputId = rawInputIdOf(formData);
+
+  await db.transaction(async (tx) => {
+    await tx.insert(transactions).values({
+      ...parsed,
+      source: rawInputId ? 'web_agent' : 'manual',
+      rawInputId,
+    });
+    // 採用了才標記，被退掉的原句留著 accepted=false，之後檢討 prompt 時就是這些有價值
+    if (rawInputId) {
+      await tx.update(rawInputs).set({ accepted: true }).where(eq(rawInputs.id, rawInputId));
+    }
+  });
+
   revalidateAll();
   return { ok: true };
 }

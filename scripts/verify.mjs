@@ -46,6 +46,8 @@ async function cleanup() {
   await sql`delete from transactions where note like ${MARK + '%'}`;
   await sql`delete from settlements where title like ${MARK + '%'}`;
   await sql`delete from categories where name like ${MARK + '%'}`;
+  // 口語輸入留下的原句。交易先刪，外鍵是 set null，所以順序不重要
+  await sql`delete from raw_inputs where text like ${MARK + '%'} or text = ${'今天中午吃便當 123 元'}`;
 }
 
 /** 收尾的清理失敗不該蓋掉真正的測試結果，也不該讓行程整個炸掉 */
@@ -303,6 +305,64 @@ try {
   await page.waitForURL('**/transactions**', { timeout: 25000 });
   const left = await sql`select count(*)::int as n from transactions where note like ${MARK + '%午餐%'}`;
   check('刪掉之後資料庫也沒有了', left[0].n === 0);
+
+  /**
+   * 口語輸入。沒設 DEEPSEEK_API_KEY 就跳過而不是算失敗 ——
+   * 這支腳本要能在沒有金鑰的環境跑完（例如別人 clone 下來）。
+   * 只打一次 API，成本可以忽略。
+   */
+  console.log('\n【口語輸入】');
+  if (!process.env.DEEPSEEK_API_KEY) {
+    console.log('  － 沒有 DEEPSEEK_API_KEY，跳過');
+  } else {
+    await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+    await page.getByPlaceholder('用講的：剛剛午餐 150').fill('今天中午吃便當 123 元');
+    await page.getByRole('button', { name: '送出' }).click();
+
+    // 解析大約 1～1.5 秒，給寬一點；填進表單才算成功
+    await page.waitForFunction(
+      () => document.querySelector('input[name="amount"]')?.value === '123',
+      null,
+      { timeout: 30000 },
+    );
+    check('一句話能解析出金額並填進表單', true);
+    check('解析完會顯示原句讓人核對', await page.getByText(/聽成這樣/).isVisible());
+
+    const rawBefore = await sql`
+      select accepted from raw_inputs where text = ${'今天中午吃便當 123 元'}
+      order by created_at desc limit 1`;
+    check('原句有存下來，且還沒標記採用', rawBefore.length === 1 && rawBefore[0].accepted === false);
+
+    // 備註蓋掉 AI 寫的，測試資料才帶得上 [E2E] 標記、跑完清得掉
+    await openMarks(page);
+    await page.getByPlaceholder('備註（可留空）').fill(`${MARK} 口語輸入`);
+    await page.getByRole('button', { name: '記一筆' }).click();
+    await page.getByText('記好了').waitFor({ timeout: 25000 });
+
+    const [saved] = await sql`
+      select amount::float8 as amount, source, raw_input_id
+      from transactions where note = ${MARK + ' 口語輸入'} limit 1`;
+    check('確認後才寫進資料庫，金額正確', Boolean(saved) && saved.amount === 123);
+    check('來源標記成 web_agent', saved?.source === 'web_agent');
+    check('交易指得回原句', Boolean(saved?.raw_input_id));
+
+    const rawAfter = await sql`
+      select accepted from raw_inputs where id = ${saved?.raw_input_id ?? null}`;
+    check('採用之後原句被標記成 accepted', rawAfter[0]?.accepted === true);
+
+    // 看不懂的句子不該預填任何東西，也不該把手動填到一半的東西清掉
+    await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+    await page.getByPlaceholder('0', { exact: true }).fill('77');
+    await page.getByPlaceholder('用講的：剛剛午餐 150').fill(`${MARK} 今天天氣真好`);
+    await page.getByRole('button', { name: '送出' }).click();
+    await page.getByText(/看不太出來/).waitFor({ timeout: 30000 });
+    check('看不懂的句子不會硬記一筆', true);
+    check(
+      '解析失敗不會清掉手動填到一半的金額',
+      (await page.getByPlaceholder('0', { exact: true }).inputValue()) === '77',
+    );
+  }
 
   console.log('\n【畫面截圖】');
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });

@@ -1,8 +1,8 @@
 import Link from 'next/link';
 
 import { MonthSummary } from '@/components/MonthSummary';
+import { QuickEntry } from '@/components/QuickEntry';
 import { SettlementAlert } from '@/components/SettlementAlert';
-import { TransactionForm } from '@/components/TransactionForm';
 import { TransactionList } from '@/components/TransactionList';
 import {
   currentMonth,
@@ -14,6 +14,7 @@ import {
 } from '@/lib/format';
 import { getCategories, getSettlements, getTransactions, summarize } from '@/lib/queries';
 
+import { parseSentence } from '../actions/parse';
 import { createTransaction } from '../actions/transactions';
 
 // 記完帳要立刻看到，不能吃到快取
@@ -58,8 +59,9 @@ export default async function HomePage() {
       {/* 第二層：這頁真正要做的事 */}
       <section>
         <h2 className="mb-2.5 text-sm text-text-muted">記一筆</h2>
-        <TransactionForm
-          action={createTransaction}
+        <QuickEntry
+          parseAction={parseSentence}
+          createAction={createTransaction}
           categories={categories}
           quickDates={quickDates}
         />
