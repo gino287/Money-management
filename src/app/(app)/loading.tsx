@@ -7,11 +7,16 @@
  */
 export default function Loading() {
   return (
-    <div className="animate-pulse space-y-7" aria-busy="true" aria-label="載入中">
-      <div className="h-3 w-20 rounded bg-surface" />
+    <div className="animate-pulse space-y-6" aria-busy="true" aria-label="載入中">
+      <div className="flex items-baseline justify-between pt-1">
+        <div className="h-6 w-20 rounded bg-surface" />
+        <div className="h-3 w-16 rounded bg-surface" />
+      </div>
 
-      <div className="space-y-3.5">
+      {/* 記一筆那張卡 */}
+      <div className="space-y-3.5 rounded-[var(--radius-lg)] border border-border bg-surface/40 p-4">
         <div className="h-4 w-14 rounded bg-surface" />
+        <div className="h-11 rounded-[var(--radius)] bg-surface" />
         <div className="h-11 rounded-[var(--radius)] bg-surface" />
         <div className="h-16 rounded-[var(--radius)] bg-surface" />
         <div className="flex flex-wrap gap-1.5">
@@ -28,7 +33,7 @@ export default function Loading() {
         <div className="h-12 rounded-[var(--radius)] bg-surface" />
       </div>
 
-      <div className="h-32 rounded-[var(--radius)] bg-surface" />
+      <div className="h-56 rounded-[var(--radius-lg)] bg-surface" />
 
       <div className="space-y-2">
         <div className="h-4 w-16 rounded bg-surface" />

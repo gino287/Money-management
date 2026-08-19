@@ -24,6 +24,8 @@
   --estimated: #f0c674;
 
   --radius: 0.75rem;
+  /* 大卡片用的圓角。手機上圓角越大越像原生 app，小元件維持 --radius 才不會糊成一團 */
+  --radius-lg: 1.25rem;
 }
 
 @theme inline {
@@ -42,6 +44,7 @@
   --color-advance: var(--advance);
   --color-estimated: var(--estimated);
   --radius-card: var(--radius);
+  --radius-card-lg: var(--radius-lg);
 }
 
 * {
@@ -69,6 +72,25 @@ body {
 
 .pad-bottom {
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1.5rem);
+}
+
+/*
+ * 點下去要有反應。手機沒有 hover，全靠按下的那一下給回饋，
+ * 沒有的話會一直懷疑自己是不是沒按到。
+ */
+@media (hover: none) {
+  a:active,
+  button:active,
+  summary:active {
+    opacity: 0.6;
+  }
+}
+
+/* 手機上長按連結會跳出「拷貝／分享」選單，在 app 裡很出戲 */
+a,
+button {
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* 金額用等寬數字，列表縱向對齊才不會跳動 */

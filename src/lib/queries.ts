@@ -10,7 +10,7 @@ import {
   type TransactionKind,
 } from '@/db/schema';
 
-import { monthRange } from './format';
+import { currentMonth, monthRange, shiftMonth } from './format';
 
 export type TransactionRow = {
   id: string;
@@ -276,4 +276,111 @@ export async function countTransactionsOn(date: string): Promise<number> {
       .where(eq(transactions.date, date)),
   );
   return row?.count ?? 0;
+}
+
+export type MonthTotals = {
+  month: string;
+  variableExpense: number;
+  fixedExpense: number;
+  income: number;
+  advance: number;
+  communalCount: number;
+  count: number;
+};
+
+/**
+ * 近 N 個月的統計，給趨勢圖用。
+ *
+ * 在 SQL 裡聚合而不是把整年的交易撈回來自己算 —— 這支是為了畫圖，
+ * 不需要每一筆的內容，撈回來只是浪費頻寬。
+ * （單月的月結算仍然走 summarize()，那邊本來就已經有那個月的完整明細。）
+ *
+ * 沒有帳的月份也要出現在結果裡，否則圖上會少一根柱子、看起來像資料掉了。
+ */
+export async function getMonthlyTotals(months = 6): Promise<MonthTotals[]> {
+  const wanted: string[] = [];
+  for (let i = months - 1; i >= 0; i--) wanted.push(shiftMonth(currentMonth(), -i));
+  const start = `${wanted[0]}-01`;
+
+  const monthExpr = sql<string>`to_char(${transactions.date}, 'YYYY-MM')`;
+  const rows = await read('月度統計', () =>
+    db
+      .select({
+        month: monthExpr,
+        variableExpense: sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'expense' and not ${transactions.isFixed}), 0)`.mapWith(
+          Number,
+        ),
+        fixedExpense: sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'expense' and ${transactions.isFixed}), 0)`.mapWith(
+          Number,
+        ),
+        income: sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'income'), 0)`.mapWith(
+          Number,
+        ),
+        advance: sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'advance'), 0)`.mapWith(
+          Number,
+        ),
+        communalCount: sql<number>`count(*) filter (where ${transactions.isCommunal})`.mapWith(
+          Number,
+        ),
+        count: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(transactions)
+      .where(gte(transactions.date, start))
+      .groupBy(monthExpr),
+  );
+
+  const found = new Map(rows.map((r) => [r.month, r]));
+  return wanted.map(
+    (month) =>
+      found.get(month) ?? {
+        month,
+        variableExpense: 0,
+        fixedExpense: 0,
+        income: 0,
+        advance: 0,
+        communalCount: 0,
+        count: 0,
+      },
+  );
+}
+
+export type CategorySlice = {
+  categoryId: string;
+  name: string;
+  amount: number;
+  count: number;
+  isFixed: boolean;
+};
+
+/**
+ * 某個月各分類花了多少，給佔比圖用。
+ *
+ * 只算支出：暫付款是先墊出去、之後會回來的錢，混進「這個月花在哪」會誤導
+ * （規格書 2.2）。開伙是 0 元，自然不會出現在圖上，次數另外顯示。
+ */
+export async function getCategoryBreakdown(month: string): Promise<CategorySlice[]> {
+  const { start, end } = monthRange(month);
+
+  return read('分類佔比', () =>
+    db
+      .select({
+        categoryId: categories.id,
+        name: categories.name,
+        isFixed: categories.isFixed,
+        amount: sql<number>`coalesce(sum(${transactions.amount}), 0)`.mapWith(Number),
+        count: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(transactions)
+      .innerJoin(categories, eq(transactions.categoryId, categories.id))
+      .where(
+        and(
+          eq(transactions.kind, 'expense'),
+          gte(transactions.date, start),
+          lt(transactions.date, end),
+        ),
+      )
+      .groupBy(categories.id, categories.name, categories.isFixed)
+      .having(sql`sum(${transactions.amount}) > 0`)
+      .orderBy(desc(sql`sum(${transactions.amount})`)),
+  );
 }

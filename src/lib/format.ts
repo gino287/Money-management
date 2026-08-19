@@ -75,3 +75,24 @@ export function formatSigned(value: number, kind: 'expense' | 'income' | 'advanc
   const sign = kind === 'income' ? '+' : '−';
   return `${sign}${formatAmount(Math.abs(value))}`;
 }
+
+const hourFormatter = new Intl.DateTimeFormat('en-GB', {
+  timeZone: TZ,
+  hour: '2-digit',
+  hour12: false,
+});
+
+/** 台北時間的小時（0–23）。伺服器跑 UTC，直接 getHours() 會差八小時 */
+export function taipeiHour(): number {
+  return Number(hourFormatter.format(new Date()));
+}
+
+/** 打招呼。純粹是為了讓首頁有點人味，不是功能 */
+export function greeting(): string {
+  const hour = taipeiHour();
+  if (hour < 5) return '還沒睡啊';
+  if (hour < 11) return '早安';
+  if (hour < 14) return '午安';
+  if (hour < 18) return '下午好';
+  return '晚安';
+}

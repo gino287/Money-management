@@ -14,6 +14,8 @@ type Props = {
   quickDates: { iso: string; label: string }[];
   parseAction: (state: ParseState, formData: FormData) => Promise<ParseState>;
   createAction: (state: ActionState, formData: FormData) => Promise<ActionState>;
+  /** 從網址 ?say= 帶進來的句子，先填好等使用者按送出 */
+  initialSentence?: string;
 };
 
 function Send() {
@@ -36,7 +38,13 @@ function Send() {
  * 所以用一個客戶端外殼把兩件事串起來。解析完不直接寫入 ——
  * 一律填進表單等 Gino 看過再按（規格書 3：金額聽錯很致命）。
  */
-export function QuickEntry({ categories, quickDates, parseAction, createAction }: Props) {
+export function QuickEntry({
+  categories,
+  quickDates,
+  parseAction,
+  createAction,
+  initialSentence,
+}: Props) {
   const [state, formAction] = useActionState<ParseState, FormData>(parseAction, {});
   // 已經按下「記一筆」的那一句，用來把上面的回顧收掉。
   // 記成 id 而不是布林值，這樣下一句進來時自動失效，不必用 effect 去清
@@ -73,6 +81,7 @@ export function QuickEntry({ categories, quickDates, parseAction, createAction }
           type="text"
           autoComplete="off"
           maxLength={200}
+          defaultValue={initialSentence}
           placeholder="用講的：剛剛午餐 150"
           className="min-w-0 flex-1 rounded-[calc(var(--radius)-0.25rem)] bg-bg px-3 py-2.5 text-sm outline-none placeholder:text-text-faint"
         />

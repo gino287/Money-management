@@ -192,6 +192,59 @@ try {
     (await page.getByText(`開伙 ${base.communal + 1} 次`).count()) === 1,
   );
 
+  console.log();
+  console.log('【網址帶一句話進來】');
+  await page.goto(`${BASE}/?say=${encodeURIComponent(`${MARK} 剛剛午餐 88`)}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 25000 });
+  check(
+    '?say= 會把口語輸入框先填好',
+    (await page.getByPlaceholder('用講的：剛剛午餐 150').inputValue()) === `${MARK} 剛剛午餐 88`,
+  );
+  check('但不會自動送出（送出要花錢呼叫 AI）', (await page.getByText(/聽成這樣/).count()) === 0);
+
+  console.log('\n【月結算頁與圖表】');
+  await page.goto(`${BASE}/summary`, { waitUntil: 'domcontentloaded' });
+  await page.getByText('這個月花了').waitFor({ timeout: 25000 });
+  const summaryPage = await page.locator('main').innerText();
+
+  check(
+    `月結算的支出總額 ${money(base.variable + base.fixed + 6950)}`,
+    summaryPage.includes(money(base.variable + base.fixed + 6950)),
+    summaryPage.split('\n').slice(0, 8).join(' '),
+  );
+  check(
+    `暫付款 ${money(base.advance + 500)} 單獨一格，沒併進支出`,
+    summaryPage.includes(money(base.advance + 500)),
+  );
+  check(`收入 ${money(base.income + 12000)} 單獨一格`, summaryPage.includes(money(base.income + 12000)));
+  check('開伙次數看得到', /開伙 \d+ 次/.test(summaryPage));
+
+  // 趨勢圖：六個月份都要有柱子（沒帳的月份畫底線，但標籤還是在）
+  const monthLabels = await page.getByText(/^\d{1,2}月$/).count();
+  check('趨勢圖有六個月份', monthLabels === 6, `實際 ${monthLabels} 個`);
+
+  // 分類佔比
+  check('分類佔比列得出房租', summaryPage.includes('房租'));
+  check('分類佔比列得出餐食', summaryPage.includes('餐食'));
+  const pcts = [...summaryPage.matchAll(/(\d+)%/g)].map((m) => Number(m[1]));
+  check(
+    '各分類百分比加起來接近 100',
+    pcts.length > 0 && Math.abs(pcts.reduce((a, b) => a + b, 0) - 100) <= pcts.length,
+    `實際 ${pcts.join('+')}`,
+  );
+
+  // 月份切換
+  await page.getByLabel('上個月').click();
+  await page.waitForURL(/month=/, { timeout: 25000 });
+  check('可以往前翻月份', await page.getByText('回到本月').isVisible());
+  await page.getByText('回到本月').click();
+  await page.waitForURL((u) => !u.search.includes('month='), { timeout: 25000 });
+  check('可以跳回本月', true);
+
+  check('導覽列有月結算分頁', (await page.getByRole('link', { name: '月結算' }).count()) >= 1);
+
   console.log('\n【事後修正：估算改實際，留稽核】');
   await page.goto(`${BASE}/transactions`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('link', { name: /估算/ }).first().click();
@@ -228,7 +281,9 @@ try {
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
   await page.getByText(/還有 1 筆沒結清/).waitFor({ timeout: 20000 });
   check('首頁常駐提醒出現', true);
-  check('導覽列顯示未結清數量', (await page.getByRole('link', { name: /待結清\s*1/ }).count()) === 1);
+  // 用 testid 而不是連結的無障礙名稱：名稱是「圖示徽章 + 文字」拼出來的，
+  // 動一下版面順序就變，測試會為了排版變動而假失敗
+  check('導覽列顯示未結清數量', (await page.getByTestId('open-count').innerText()) === '1');
 
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: '標記結清' }).click();
