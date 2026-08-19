@@ -3,6 +3,7 @@ import {
   reopenSettlement,
   settleSettlement,
 } from '@/app/actions/settlements';
+import { PageHeader } from '@/components/PageHeader';
 import { SettlementForm } from '@/components/SettlementForm';
 import { formatAmount } from '@/lib/format';
 import { getSettlements } from '@/lib/queries';
@@ -18,19 +19,17 @@ export default async function SettlementsPage() {
 
   return (
     <div className="space-y-6">
-      <header className="px-1">
-        <h1 className="text-sm">待結清</h1>
-        <p className="mt-1 text-xs text-text-faint">
-          暫付款、押金、借出去的錢、待回收的補助。結清要自己確認，系統不會自動改帳。
-        </p>
-      </header>
+      <PageHeader
+        title="待結清"
+        description="暫付款、押金、借出去的錢、待回收的補助。結清要自己確認，系統不會自動改帳。"
+      />
 
       <SettlementForm />
 
       <section>
         <h2 className="mb-2 px-1 text-sm text-text-muted">未結清 {open.length > 0 && `(${open.length})`}</h2>
         {open.length === 0 ? (
-          <p className="rounded-[var(--radius)] border border-dashed border-border px-4 py-8 text-center text-sm text-text-faint">
+          <p className="rounded-[var(--radius-lg)] border border-dashed border-border px-4 py-10 text-center text-sm text-text-faint">
             都結清了
           </p>
         ) : (
@@ -38,7 +37,7 @@ export default async function SettlementsPage() {
             {open.map((item) => (
               <li
                 key={item.id}
-                className="rounded-[var(--radius)] border border-estimated/25 bg-surface px-4 py-3"
+                className="rounded-[var(--radius-lg)] border border-estimated/25 bg-surface px-4 py-3.5"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -83,7 +82,7 @@ export default async function SettlementsPage() {
       {settled.length > 0 && (
         <section>
           <h2 className="mb-2 px-1 text-sm text-text-muted">已結清</h2>
-          <ul className="overflow-hidden rounded-[var(--radius)] border border-border bg-surface">
+          <ul className="overflow-hidden rounded-[var(--radius-lg)] border border-border bg-surface">
             {settled.map((item) => (
               <li
                 key={item.id}

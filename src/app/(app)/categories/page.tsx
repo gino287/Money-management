@@ -1,6 +1,7 @@
 import { toggleCategoryActive, toggleCategoryFixed } from '@/app/actions/categories';
 import { CategoryForm } from '@/components/CategoryForm';
 import { CategoryName } from '@/components/CategoryName';
+import { PageHeader } from '@/components/PageHeader';
 import { getCategories, getCategoryUsage } from '@/lib/queries';
 
 export const dynamic = 'force-dynamic';
@@ -17,19 +18,17 @@ export default async function CategoriesPage() {
 
   return (
     <div className="space-y-6">
-      <header className="px-1">
-        <h1 className="text-sm">分類</h1>
-        <p className="mt-1 text-xs text-text-faint">
-          不用的分類請停用而不是刪掉，這樣舊紀錄才不會失去分類。
-        </p>
-      </header>
+      <PageHeader
+        title="分類"
+        description="不用的分類請停用而不是刪掉，這樣舊紀錄才不會失去分類。"
+      />
 
       <CategoryForm />
 
       {groups.map((group) => (
         <section key={group.kind}>
           <h2 className="mb-2 px-1 text-sm text-text-muted">{group.label}</h2>
-          <ul className="overflow-hidden rounded-[var(--radius)] border border-border bg-surface">
+          <ul className="overflow-hidden rounded-[var(--radius-lg)] border border-border bg-surface">
             {categories
               .filter((c) => c.kind === group.kind)
               .map((c) => {

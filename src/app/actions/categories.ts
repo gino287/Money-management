@@ -1,14 +1,24 @@
 'use server';
 
 import { eq, sql } from 'drizzle-orm';
-import { revalidatePath } from 'next/cache';
+import { revalidatePath, revalidateTag } from 'next/cache';
 
 import { db } from '@/db';
 import { categories, CATEGORY_KINDS, type CategoryKind } from '@/db/schema';
+import { CATEGORIES_TAG } from '@/lib/queries';
 
 import type { ActionState } from './transactions';
 
 function revalidateAll() {
+  /*
+   * 分類清單是跨請求快取的（見 lib/queries.ts），動過就要立刻失效，
+   * 不然新增或停用之後畫面上還是舊的。
+   *
+   * expire: 0 是文件裡「立刻過期」的寫法。Next 16 建議 Server Action 用
+   * updateTag，但那支只認得 'use cache' 打的標籤，我們用的是 unstable_cache，
+   * 對得上的是 revalidateTag。單參數的 revalidateTag(tag) 在這版已經是棄用寫法。
+   */
+  revalidateTag(CATEGORIES_TAG, { expire: 0 });
   revalidatePath('/');
   revalidatePath('/categories');
   revalidatePath('/transactions');

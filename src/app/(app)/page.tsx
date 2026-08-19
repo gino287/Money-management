@@ -18,7 +18,7 @@ import {
   getMonthlyTotals,
   getSettlements,
   getTransactions,
-  summarize,
+  summarizeTotals,
 } from '@/lib/queries';
 
 import { parseSentence } from '../actions/parse';
@@ -54,12 +54,15 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
    *
    * 排隊查的代價：本機每支多約 40ms，部署到 Vercel 上跟資料庫同機房只差幾毫秒。
    * 拿這個換「不會卡住」很划算。
+   *
+   * 也因為這樣，這一頁的查詢數要斤斤計較。月結算的數字改成從 getMonthlyTotals
+   * 的聚合結果直接算（summarizeTotals），不再另外撈當月每一筆回來加總 ——
+   * 少一支查詢，而且少掉的正是最大的那一支。
    */
   const categories = await getCategories({ activeOnly: false });
-  const monthRows = await getTransactions({ month });
+  const trend = await getMonthlyTotals(6);
   const recent = await getTransactions({}, 4);
   const openSettlements = await getSettlements('open');
-  const trend = await getMonthlyTotals(6);
 
   const quickDates = [
     { iso: today, label: '今天' },
@@ -95,7 +98,7 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
       {/* 第三層：記完之後看一眼結果 */}
       <section>
         <MonthSummary
-          summary={summarize(monthRows)}
+          summary={summarizeTotals(trend[trend.length - 1])}
           label={formatMonthShort(month)}
           href="/summary"
           linkLabel="月結算"

@@ -19,14 +19,25 @@ const globalForDb = globalThis as unknown as {
   db?: Db;
   /** 連線池重建了幾次。要跟 client 一起放在 globalThis，理由同上 */
   generation?: number;
+  /** 上次重建的時間，用來擋住連環重建 */
+  lastResetAt?: number;
 };
 
 /**
  * 模組層級的快取。下面的 Proxy 每次取屬性都會呼叫 connect()，
  * 少了這個就會每查一次資料就開一組新連線池，把 Supabase pooler 的
  * 連線數吃光，請求全部卡住。
+ *
+ * **一定要跟著記下它是哪一代的**，這是 2026-08-21 抓到的 bug：
+ * 這支模組會被實體化不只一次（見上面 globalForDb 的說明），
+ * resetDb 只清得掉「呼叫它的那一份」的 cached。另一份還握著已經
+ * end() 掉的舊連線池，之後每一支查詢都立刻收到 write CONNECTION_ENDED，
+ * 而且因為 generation 守衛與冷卻時間，它也重建不了 —— 等於那一份模組
+ * 就此永久壞掉，症狀是「重試四次全是 CONNECTION_ENDED 然後放棄」。
+ * 比對代號就能讓每一份模組在任何一次重建之後自己丟掉舊的。
  */
 let cached: Db | undefined;
+let cachedGeneration = -1;
 
 /** 現在這一代連線池的編號，用來判斷「我失敗的那一代是不是已經被別人重建過了」 */
 export function dbGeneration(): number {
@@ -44,24 +55,51 @@ export function dbGeneration(): number {
  *
  * sinceGeneration 是呼叫者失敗當下看到的代號。如果已經有別人重建過了，
  * 這次就不要再重建一次，否則同一頁的好幾支查詢會互相把對方的新連線砍掉。
+ *
+ * 還有兩層保護，都是 2026-08-21 被連環重建咬到之後才加的，別拿掉：
+ *
+ * 1. **舊池子給五秒善終，不要 timeout: 0。**
+ *    原本是直接砍，結果把「剛好也在跑、但完全健康」的查詢一起砍掉
+ *    （日誌裡一整排 write CONNECTION_ENDED）。那些查詢會重試、重試又要開新連線，
+ *    而「一次開很多新連線」正是最初那個 pooler bug 的觸發條件 —— 變成正回饋，
+ *    重建次數在幾秒內從 10 衝到 15。給緩衝期之後，健康的查詢會自己跑完，
+ *    真正卡住的那幾條反正也不會回應，五秒後照樣被強制關掉，我們沒有在等它。
+ *
+ * 2. **冷卻時間。** 剛重建完幾秒內又有查詢逾時，那多半是它本來就跑在舊池子上，
+ *    再重建一次只是再送一波新連線出去。這種時候讓它用現有的新池子重試就好。
  */
+const RESET_COOLDOWN_MS = 3_000;
+const DRAIN_TIMEOUT_S = 30;
+
 export function resetDb(sinceGeneration: number, reason: string): void {
   if (sinceGeneration !== dbGeneration()) return;
 
+  const since = Date.now() - (globalForDb.lastResetAt ?? 0);
+  if (since < RESET_COOLDOWN_MS) {
+    console.warn(`[db] ${reason}，但 ${since}ms 前才重建過，這次直接用現有的池子重試`);
+    return;
+  }
+
   const dying = globalForDb.client;
   globalForDb.generation = dbGeneration() + 1;
+  globalForDb.lastResetAt = Date.now();
   globalForDb.client = undefined;
   globalForDb.db = undefined;
   cached = undefined;
+  cachedGeneration = -1;
 
   console.warn(`[db] 連線池重建（第 ${globalForDb.generation} 次）：${reason}`);
-  // 不 await：卡住的連線本來就不會回應，timeout 0 是直接砍掉不等它
-  dying?.end({ timeout: 0 }).catch(() => {});
+  // 不 await。新的查詢都走新池子了，舊池子自己慢慢收尾
+  dying?.end({ timeout: DRAIN_TIMEOUT_S }).catch(() => {});
 }
 
 function connect(): Db {
-  if (cached) return cached;
-  if (globalForDb.db) return (cached = globalForDb.db);
+  // 代號對不上就代表這份是重建前的舊貨，丟掉重拿
+  if (cached && cachedGeneration === dbGeneration()) return cached;
+  if (globalForDb.db) {
+    cachedGeneration = dbGeneration();
+    return (cached = globalForDb.db);
+  }
 
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -127,10 +165,11 @@ function connect(): Db {
     });
   const instance = drizzle(client, { schema });
 
-  cached = instance;
   globalForDb.client = client;
   globalForDb.db = instance;
   globalForDb.generation ??= 0;
+  cached = instance;
+  cachedGeneration = dbGeneration();
   return instance;
 }
 

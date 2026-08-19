@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, ilike, lt, sql } from 'drizzle-orm';
+import { unstable_cache } from 'next/cache';
 import { cache } from 'react';
 
 import { db, dbGeneration, resetDb } from '@/db';
@@ -11,6 +12,9 @@ import {
 } from '@/db/schema';
 
 import { currentMonth, monthRange, shiftMonth } from './format';
+
+/** 分類快取的失效標籤。寫入端（actions/categories.ts）要用同一個字串 */
+export const CATEGORIES_TAG = 'categories';
 
 export type TransactionRow = {
   id: string;
@@ -46,8 +50,22 @@ export type TransactionRow = {
  */
 const READ_TIMEOUT_MS = 3_000;
 
+/**
+ * 重建連線池的時候，正在舊池子上跑的查詢會收到這個。
+ * 那不是資料庫的問題，是我們自己把它腳下的連線抽掉了，所以重試不該算次數 ——
+ * 只重試一次的話，剛好撞上重建的那支查詢就直接讓整頁 500。
+ */
+function isOurFault(error: unknown): boolean {
+  const message = (error as Error)?.message ?? '';
+  const cause = ((error as { cause?: Error })?.cause?.message) ?? '';
+  return `${message} ${cause}`.includes('CONNECTION_ENDED');
+}
+
 async function read<T>(label: string, run: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
+  let attempt = 0;
+  // 總次數設上限，免得無限重試。正常情況下第一次就成功
+  for (let loop = 0; loop < 4; loop++) {
+    attempt++;
     const generation = dbGeneration();
     const startedAt = Date.now();
     let gaveUp = false;
@@ -77,6 +95,21 @@ async function read<T>(label: string, run: () => Promise<T>): Promise<T> {
       ]);
     } catch (error) {
       gaveUp = true;
+
+      if (isOurFault(error)) {
+        /*
+         * 這條連線是被我們自己重建時抽掉的，不算它失敗。
+         *
+         * 但一定要等一下再重試：沒有間隔的話四次會全擠在同一個毫秒，
+         * 一起撞上「舊池子正在收、新池子還沒站穩」的那個空窗，四次一起死。
+         * 實測過沒有間隔時這裡會連吃四次同樣的錯然後放棄。
+         */
+        attempt--;
+        await new Promise((r) => setTimeout(r, 120 * (loop + 1)));
+        console.warn(`[db] ${label} 的連線被重建砍到，等一下換新的池子再跑`);
+        continue;
+      }
+
       if (attempt >= 2) throw error;
       console.warn(`[db] ${label} 失敗，重試一次：${(error as Error).message.slice(0, 100)}`);
       // 重試不能再用同一批連線 —— 壞掉的通常是整組，不是剛好那一條
@@ -85,6 +118,8 @@ async function read<T>(label: string, run: () => Promise<T>): Promise<T> {
       clearTimeout(timer);
     }
   }
+
+  throw new Error(`查詢重試多次仍失敗（${label}）`);
 }
 
 const transactionSelect = {
@@ -101,17 +136,39 @@ const transactionSelect = {
 };
 
 /**
- * 用 React 的 cache 包起來，同一次請求裡 layout 跟 page 都要用時只會查一次。
- * 少一支查詢就少一條連線，首頁一次要查好幾樣，這件事有差。
+ * 分類清單跨請求快取。
+ *
+ * 這是全系統被打最兇的一支查詢：每一頁都要、每次 AI 解析也要、每次寫入驗證也要。
+ * 但分類幾乎不會變（Gino 大概一個月動一次），每次都去資料庫問一遍很浪費 ——
+ * 在這台電腦上它也正是最常逾時、然後拖垮整頁的那一支。
+ * 《實作計畫.md》第 6 節本來就列了這一條。
+ *
+ * 新增／改名／停用時會呼叫 revalidateTag('categories') 立刻失效，
+ * 所以不會有「改了看不到」的情況（見 src/app/actions/categories.ts）。
+ *
+ * 用 unstable_cache 而不是 Next 16 建議的 'use cache'：後者要在 next.config
+ * 打開 cacheComponents，那會改變整個 app 的渲染語意（靜態外殼 + 串流），
+ * 不是為了快取一份分類清單就該動的東西。等真的要整體改造時再一起換。
+ */
+const loadCategories = unstable_cache(
+  async () =>
+    read('分類清單', () =>
+      db
+        .select()
+        .from(categories)
+        .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name)),
+    ),
+  ['categories'],
+  { tags: [CATEGORIES_TAG] },
+);
+
+/**
+ * 外層再包一層 React cache：同一次請求裡 layout 跟 page 都要用時只會走一次。
+ * activeOnly 在 JS 這邊過濾，這樣兩種呼叫方式共用同一份快取。
  */
 export const getCategories = cache(async (opts: { activeOnly?: boolean } = {}) => {
-  return read('分類清單', () =>
-    db
-      .select()
-      .from(categories)
-      .where(opts.activeOnly ? eq(categories.isActive, true) : undefined)
-      .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name)),
-  );
+  const all = await loadCategories();
+  return opts.activeOnly ? all.filter((c) => c.isActive) : all;
 });
 
 export type TransactionFilters = {
@@ -204,6 +261,26 @@ export function summarize(rows: TransactionRow[]): MonthSummary {
   return summary;
 }
 
+/**
+ * 由 SQL 聚合出來的月度數字直接組成月結算。
+ *
+ * 首頁只是要顯示「這個月花多少」，不需要當月每一筆的內容 ——
+ * 撈整個月的明細回來只為了加總，在這台電腦上是最容易逾時的那種查詢。
+ * 明細頁還是走 summarize()，因為那裡本來就要顯示每一筆。
+ */
+export function summarizeTotals(totals: MonthTotals): MonthSummary {
+  return {
+    variableExpense: totals.variableExpense,
+    fixedExpense: totals.fixedExpense,
+    advance: totals.advance,
+    income: totals.income,
+    net: totals.income - totals.variableExpense - totals.fixedExpense,
+    communalCount: totals.communalCount,
+    estimatedCount: totals.estimatedCount,
+    count: totals.count,
+  };
+}
+
 /** 給分類管理頁顯示「這個分類用過幾次」，判斷能不能安心停用 */
 export async function getCategoryUsage(): Promise<Map<string, number>> {
   const rows = await read('分類使用次數', () =>
@@ -229,12 +306,13 @@ export const getSettlements = cache(async (status?: 'open' | 'settled') => {
   );
 });
 
-/** 分類的預設 isFixed，新增交易時用來帶值 */
+/**
+ * 單一分類。每次寫入交易都會呼叫它做驗證（見 actions/transactions.ts 的 parse），
+ * 所以直接從快取好的清單裡找，不要再往資料庫跑一趟。
+ * 清單是完整的（沒有濾掉停用的），所以「找不到就是真的不存在」仍然成立。
+ */
 export async function getCategory(id: string) {
-  const [row] = await read('單一分類', () =>
-    db.select().from(categories).where(eq(categories.id, id)).limit(1),
-  );
-  return row;
+  return (await loadCategories()).find((c) => c.id === id);
 }
 
 export function categoryKindFor(kind: TransactionKind): CategoryKind {
@@ -285,6 +363,7 @@ export type MonthTotals = {
   income: number;
   advance: number;
   communalCount: number;
+  estimatedCount: number;
   count: number;
 };
 
@@ -322,6 +401,9 @@ export async function getMonthlyTotals(months = 6): Promise<MonthTotals[]> {
         communalCount: sql<number>`count(*) filter (where ${transactions.isCommunal})`.mapWith(
           Number,
         ),
+        estimatedCount: sql<number>`count(*) filter (where ${transactions.isEstimated})`.mapWith(
+          Number,
+        ),
         count: sql<number>`count(*)`.mapWith(Number),
       })
       .from(transactions)
@@ -339,6 +421,7 @@ export async function getMonthlyTotals(months = 6): Promise<MonthTotals[]> {
         income: 0,
         advance: 0,
         communalCount: 0,
+        estimatedCount: 0,
         count: 0,
       },
   );

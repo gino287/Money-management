@@ -127,6 +127,14 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
         </div>
       </section>
 
+      {/* 匯出。用 <a> 而不是 <Link>：這是下載檔案，不是換頁 */}
+      <a
+        href={`/api/export?month=${month}`}
+        className="block rounded-[var(--radius-lg)] border border-border bg-surface px-4 py-3.5 text-center text-sm text-text-muted transition-colors hover:text-text"
+      >
+        把 {formatMonth(month)} 匯出成 CSV
+      </a>
+
       {open.length > 0 && (
         <Link
           href="/settlements"

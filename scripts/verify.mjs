@@ -144,6 +144,7 @@ try {
       and date < (date_trunc('month', (now() at time zone 'Asia/Taipei')) + interval '1 month')::date`;
 
   const money = (n) => new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 2 }).format(n);
+  const currentMonth = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).slice(0, 7);
 
   console.log('\n【記帳：五種性質】');
   await record(page, { category: '餐食', amount: 150, note: '午餐' });
@@ -203,6 +204,26 @@ try {
     (await page.getByPlaceholder('用講的：剛剛午餐 150').inputValue()) === `${MARK} 剛剛午餐 88`,
   );
   check('但不會自動送出（送出要花錢呼叫 AI）', (await page.getByText(/聽成這樣/).count()) === 0);
+  console.log();
+  console.log('【匯出 CSV】');
+  // 直接組 CRLF 常數，不要在字串裡寫跳脫字元 —— 這個檔案是用 heredoc 寫進去的，
+  // 跳脫序列會在半路被吃掉變成真的換行，把腳本弄壞（已經中過兩次）
+  const CRLF = String.fromCharCode(13) + String.fromCharCode(10);
+  const csvRes = await page.request.get(`${BASE}/api/export?month=${currentMonth}`);
+  const csv = await csvRes.text();
+  check('匯出端點回得了 CSV', csvRes.status() === 200);
+  check('CSV 有 UTF-8 BOM（不然 Excel 開中文會亂碼）', csv.charCodeAt(0) === 0xfeff);
+  check('第一行是欄位名稱', csv.split(CRLF)[0].includes('日期,性質,分類,金額'));
+  check('匯出得到剛剛記的那幾筆', csv.includes(`${MARK} 午餐`) && csv.includes('6000'));
+  check('性質用中文寫', csv.includes('暫付款') && csv.includes('收入'));
+  check(
+    '每一行的欄位數都對得上（含逗號的備註有被引號包好）',
+    csv
+      .split(CRLF)
+      .filter(Boolean)
+      .every((line) => line.split(',').length >= 8),
+  );
+
 
   console.log('\n【月結算頁與圖表】');
   await page.goto(`${BASE}/summary`, { waitUntil: 'domcontentloaded' });
@@ -502,6 +523,10 @@ try {
       check('回覆訊息說得出記了什麼', /記好了/.test(recorded.reply ?? ''));
       check('原句有存下來並標記採用', Boolean(row?.raw_input_id));
 
+      if (!row) {
+        // 沒記成功就別再往下戳，後面每一項都會踩到 undefined 讓整支腳本中斷
+        check('LINE 後續檢查（記帳沒成功，跳過）', false, recorded.reply ?? '沒有回覆');
+      } else {
       const amended = await say('改成 88');
       const [after] = await sql`
         select amount::float8 as amount, is_estimated from transactions where id = ${row.id}`;
@@ -521,6 +546,7 @@ try {
 
       const help = await say('說明');
       check('回「說明」看得到用法', /記帳/.test(help.reply ?? ''));
+      }
     } finally {
       await new Promise((r) => fakeLine.close(r));
     }
