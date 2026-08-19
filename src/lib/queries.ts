@@ -241,3 +241,39 @@ export function categoryKindFor(kind: TransactionKind): CategoryKind {
   // 暫付款是錢先出去，用支出側的分類
   return kind === 'income' ? 'income' : 'expense';
 }
+
+/**
+ * LINE 記的最後一筆，給「改成 200」「刪掉」用。
+ *
+ * 限定 source='line' 而且是最近才記的：在 LINE 上講「改成 200」，意思一定是
+ * 「改我剛剛在 LINE 講的那筆」，不會是改網頁上手動記的東西。
+ * 超過這個時間就不給改，避免隔了一天回一句「刪掉」把舊帳刪掉。
+ */
+export async function getLastLineTransaction(withinHours = 12): Promise<TransactionRow | undefined> {
+  const [row] = await read('LINE 最後一筆', () =>
+    db
+      .select(transactionSelect)
+      .from(transactions)
+      .innerJoin(categories, eq(transactions.categoryId, categories.id))
+      .where(
+        and(
+          eq(transactions.source, 'line'),
+          gte(transactions.createdAt, new Date(Date.now() - withinHours * 3_600_000)),
+        ),
+      )
+      .orderBy(desc(transactions.createdAt))
+      .limit(1),
+  );
+  return row;
+}
+
+/** 某一天記了幾筆，每日提醒用來判斷「今天到底記了沒」 */
+export async function countTransactionsOn(date: string): Promise<number> {
+  const [row] = await read('當日筆數', () =>
+    db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(transactions)
+      .where(eq(transactions.date, date)),
+  );
+  return row?.count ?? 0;
+}

@@ -8,9 +8,21 @@ export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const isLoginPage = pathname === '/login';
 
-  // 登入端點本身當然不能被登入檢查擋住，否則永遠登不進來。
-  // health 是診斷用，登不進去的時候才最需要它，所以也放行。
-  if (pathname === '/api/login' || pathname === '/api/logout' || pathname === '/api/health') {
+  /**
+   * 這幾支不能被登入檢查擋住：
+   * - login／logout：擋住就永遠登不進來
+   * - health：診斷用，登不進去的時候才最需要它
+   * - api/line：LINE 的伺服器沒有我們的 cookie，改用官方簽章驗證（src/lib/line.ts）
+   * - api/cron/*：Vercel 的排程用 CRON_SECRET 驗證。而且排程**不會跟隨轉址**，
+   *   被導去 /login 的話那次提醒就是安靜地不見了，連錯誤都不會有
+   */
+  if (
+    pathname === '/api/login' ||
+    pathname === '/api/logout' ||
+    pathname === '/api/health' ||
+    pathname === '/api/line' ||
+    pathname.startsWith('/api/cron/')
+  ) {
     return NextResponse.next();
   }
 

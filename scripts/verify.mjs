@@ -11,6 +11,9 @@
  *
  * 測試資料都帶 [E2E] 標記，跑完會刪乾淨，不會弄髒真正的帳。
  */
+import { createHmac } from 'node:crypto';
+import { createServer } from 'node:http';
+
 import { config } from 'dotenv';
 import { chromium, devices } from '@playwright/test';
 import postgres from 'postgres';
@@ -42,12 +45,23 @@ function check(label, condition, detail = '') {
   }
 }
 
+/**
+ * 只刪自己造出來的東西。
+ *
+ * 這裡每一句 delete 都必須綁在 [E2E] 標記上，**永遠不要用 source、日期
+ * 這種會掃到真實資料的條件**。2026-08-20 就是因為臨時測試腳本寫了
+ * `delete from transactions where date = 今天`，把 Gino 當天真的記的一筆刪掉
+ * （靠 raw_inputs 存的原句才救回來）。口語輸入與 LINE 記的帳，備註是 AI 寫的、
+ * 不會帶標記，所以改成從原句反查。
+ */
 async function cleanup() {
+  await sql`
+    delete from transactions
+    where raw_input_id in (select id from raw_inputs where text like ${MARK + '%'})`;
   await sql`delete from transactions where note like ${MARK + '%'}`;
   await sql`delete from settlements where title like ${MARK + '%'}`;
   await sql`delete from categories where name like ${MARK + '%'}`;
-  // 口語輸入留下的原句。交易先刪，外鍵是 set null，所以順序不重要
-  await sql`delete from raw_inputs where text like ${MARK + '%'} or text = ${'今天中午吃便當 123 元'}`;
+  await sql`delete from raw_inputs where text like ${MARK + '%'}`;
 }
 
 /** 收尾的清理失敗不該蓋掉真正的測試結果，也不該讓行程整個炸掉 */
@@ -317,7 +331,7 @@ try {
   } else {
     await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
-    await page.getByPlaceholder('用講的：剛剛午餐 150').fill('今天中午吃便當 123 元');
+    await page.getByPlaceholder('用講的：剛剛午餐 150').fill(`${MARK} 今天中午吃便當 123 元`);
     await page.getByRole('button', { name: '送出' }).click();
 
     // 解析大約 1～1.5 秒，給寬一點；填進表單才算成功
@@ -330,7 +344,7 @@ try {
     check('解析完會顯示原句讓人核對', await page.getByText(/聽成這樣/).isVisible());
 
     const rawBefore = await sql`
-      select accepted from raw_inputs where text = ${'今天中午吃便當 123 元'}
+      select accepted from raw_inputs where text = ${`${MARK} 今天中午吃便當 123 元`}
       order by created_at desc limit 1`;
     check('原句有存下來，且還沒標記採用', rawBefore.length === 1 && rawBefore[0].accepted === false);
 
@@ -362,6 +376,103 @@ try {
       '解析失敗不會清掉手動填到一半的金額',
       (await page.getByPlaceholder('0', { exact: true }).inputValue()) === '77',
     );
+  }
+
+  /**
+   * LINE 記帳。不需要真的 LINE 帳號 —— 自己用 channel secret 簽一份 webhook
+   * 打進 /api/line，再開一台假的 LINE 伺服器接回覆，就能把整條路走完。
+   */
+  console.log('\n【LINE 記帳】');
+  if (!process.env.DEEPSEEK_API_KEY || !process.env.LINE_CHANNEL_SECRET || !process.env.LINE_USER_ID) {
+    console.log('  － 缺 DEEPSEEK_API_KEY 或 LINE 設定，跳過');
+  } else {
+    const replies = [];
+    const fakeLine = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        try {
+          replies.push({ path: req.url, ...JSON.parse(body) });
+        } catch {
+          replies.push({ path: req.url, raw: body });
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise((r) => fakeLine.listen(3999, '127.0.0.1', r));
+
+    const say = async (text, { signed = true, userId = process.env.LINE_USER_ID } = {}) => {
+      const payload = JSON.stringify({
+        destination: 'Utest',
+        events: [
+          {
+            type: 'message',
+            message: { type: 'text', id: '1', text },
+            source: { type: 'user', userId },
+            replyToken: 'reply-token-test',
+            mode: 'active',
+          },
+        ],
+      });
+      const signature = signed
+        ? createHmac('sha256', process.env.LINE_CHANNEL_SECRET).update(payload).digest('base64')
+        : 'this-is-not-a-valid-signature';
+      const before = replies.length;
+      const res = await fetch(`${BASE}/api/line`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-line-signature': signature },
+        body: payload,
+      });
+      return { status: res.status, reply: replies[before]?.messages?.[0]?.text ?? null };
+    };
+
+    try {
+      const bad = await say('午餐 55', { signed: false });
+      check('簽章不對就擋下來', bad.status === 401);
+
+      const stranger = await say(`${MARK} 午餐 55`, { userId: 'Usomeone-else' });
+      const strangerRows =
+        await sql`select count(*)::int as n from transactions where source = 'line'`;
+      check(
+        '別人傳訊息不會被記帳',
+        stranger.status === 200 && stranger.reply === null && strangerRows[0].n === 0,
+      );
+
+      const recorded = await say(`${MARK} 今天午餐花了 55`);
+      const [row] = await sql`
+        select id, amount::float8 as amount, kind, source, is_estimated, raw_input_id
+        from transactions where source = 'line' order by created_at desc limit 1`;
+      check('LINE 傳一句話就記一筆', Boolean(row) && row.amount === 55 && row.kind === 'expense');
+      check('回覆訊息說得出記了什麼', /記好了/.test(recorded.reply ?? ''));
+      check('原句有存下來並標記採用', Boolean(row?.raw_input_id));
+
+      const amended = await say('改成 88');
+      const [after] = await sql`
+        select amount::float8 as amount, is_estimated from transactions where id = ${row.id}`;
+      const revisions = await sql`
+        select count(*)::int as n from transaction_revisions where transaction_id = ${row.id}`;
+      check('回「改成 88」會改掉金額', after.amount === 88);
+      check('改金額有寫進稽核表', revisions[0].n === 1);
+      check('回覆說得出改成多少', /88/.test(amended.reply ?? ''));
+
+      const removed = await say('刪掉');
+      const left = await sql`select count(*)::int as n from transactions where id = ${row.id}`;
+      check('回「刪掉」就把那筆刪掉', left[0].n === 0);
+      check('刪掉也會回一句', /刪掉了/.test(removed.reply ?? ''));
+
+      const nothing = await say('刪掉');
+      check('沒有東西可刪時不會炸掉', nothing.status === 200 && /沒有/.test(nothing.reply ?? ''));
+
+      const help = await say('說明');
+      check('回「說明」看得到用法', /記帳/.test(help.reply ?? ''));
+    } finally {
+      await new Promise((r) => fakeLine.close(r));
+    }
+
+    console.log('\n【每日提醒】');
+    const noAuth = await fetch(`${BASE}/api/cron/reminder`);
+    check('提醒端點沒有密碼打不動', noAuth.status === 401);
   }
 
   console.log('\n【畫面截圖】');
