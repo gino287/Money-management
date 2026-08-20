@@ -162,6 +162,10 @@ try {
 
   const money = (n) => new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 2 }).format(n);
   const currentMonth = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' }).slice(0, 7);
+  const lastMonth = (() => {
+    const [y, m] = currentMonth.split('-').map(Number);
+    return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+  })();
 
   console.log('\n【記帳：五種性質】');
   await record(page, { category: '餐食', amount: 150, note: '午餐' });
@@ -255,6 +259,32 @@ try {
     '收起來時表單不吃鍵盤焦點',
     await page.locator('#manual-form').evaluate((el) => el.hasAttribute('inert')),
   );
+
+  console.log();
+  console.log('【首頁：看得出這個月是鬆是緊】');
+  const card = page.getByTestId('month-summary');
+  check('月結算卡片有最近七天的小圖', (await card.getByText('最近七天').count()) === 1);
+  check(
+    '看得到跟上個月同一時候的比較',
+    (await card.getByText(/上個月同一時候/).count()) === 1,
+    await card.innerText(),
+  );
+  // 測試資料集中在這個月、日子也過了一半以上，一定算得出預估
+  check('看得到月底預估', (await card.getByText(/照這個速度/).count()) === 1);
+
+  await page.goto(`${BASE}/summary`, { waitUntil: 'domcontentloaded' });
+  await page.getByText('這個月花了').waitFor({ timeout: 20000 });
+  check('月結算頁也有跟上個月比', (await page.getByText(/上個月同一時候/).count()) === 1);
+  // 翻到過去的月份要改成「整個月對整個月」，不能拿沒過完的本月去比
+  await page.goto(`${BASE}/summary?month=${lastMonth}`, { waitUntil: 'domcontentloaded' });
+  await page.getByText('這個月花了').waitFor({ timeout: 20000 });
+  check(
+    '翻到過去的月份改成整月比整月',
+    (await page.getByText(/上個月同一時候/).count()) === 0,
+  );
+
+  await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+  await homeReady(page);
 
   console.log();
   console.log('【網址帶一句話進來】');

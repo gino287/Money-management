@@ -1,10 +1,13 @@
 import Link from 'next/link';
 
 import { CategoryBreakdown } from '@/components/CategoryBreakdown';
+import { CompareLine } from '@/components/CompareLine';
 import { TrendChart } from '@/components/TrendChart';
 import { currentMonth, formatAmount, formatMonth, shiftMonth } from '@/lib/format';
 import {
+  derivePulse,
   getCategoryBreakdown,
+  getDailyTotals,
   getMonthlyTotals,
   getSettlements,
   getTransactions,
@@ -27,6 +30,29 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
   const summary = summarize(rows);
   const totalExpense = summary.variableExpense + summary.fixedExpense;
   const isThisMonth = month === currentMonth();
+
+  /*
+   * 跟上個月比。這個月跟過去的月份要用不同的比法：
+   *
+   * 這個月還沒過完，拿它的總額去比上個月的總額，永遠都會「比較少」——
+   * 那不是省了錢，只是還沒花完，是會騙人的數字。所以本月比的是
+   * 「到今天為止」對「上個月到同一天為止」，多查一支每日統計來算。
+   * 翻到過去的月份就沒這個問題，兩邊都是完整的月，直接從趨勢資料拿。
+   */
+  const previous = shiftMonth(month, -1);
+  const previousTotals = trend.find((t) => t.month === previous);
+  const pulse = isThisMonth ? derivePulse(await getDailyTotals()) : null;
+
+  const compare = isThisMonth
+    ? { current: pulse!.monthToDate, previous: pulse!.lastMonthToDate, label: '上個月同一時候' }
+    : {
+        current: totalExpense,
+        // 趨勢圖只撈近半年，翻得夠遠就沒有上個月的資料可以比，那就不顯示
+        previous: previousTotals
+          ? previousTotals.variableExpense + previousTotals.fixedExpense
+          : null,
+        label: '上個月',
+      };
 
   return (
     <div className="space-y-6">
@@ -81,8 +107,13 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
           <p className="mt-3 text-xs text-text-faint">這個月還沒有支出</p>
         )}
 
+        <CompareLine {...compare} />
+
         <p className="mt-4 border-t border-border pt-3 text-xs text-text-faint">
           共 {summary.count} 筆
+          {isThisMonth && pulse?.projection
+            ? `　·　照這個速度，月底大概 ${formatAmount(pulse.projection)}`
+            : ''}
           {summary.communalCount > 0 && `　·　開伙 ${summary.communalCount} 次`}
           {summary.estimatedCount > 0 && `　·　${summary.estimatedCount} 筆估算`}
         </p>

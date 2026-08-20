@@ -15,13 +15,14 @@ import {
   todayISO,
 } from '@/lib/format';
 import {
+  derivePulse,
   getCategories,
-  getDayTotals,
+  getDailyTotals,
   getMonthlyTotals,
   getSettlements,
   getTransactions,
   summarizeTotals,
-  type DayTotals,
+  type Pulse,
 } from '@/lib/queries';
 
 import { parseSentence } from '../actions/parse';
@@ -60,14 +61,18 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
    *
    * 也因為這樣，這一頁的查詢數要斤斤計較。月結算的數字改成從 getMonthlyTotals
    * 的聚合結果直接算（summarizeTotals），不再另外撈當月每一筆回來加總 ——
-   * 少一支查詢，而且少掉的正是最大的那一支。getDayTotals 是等值比對單一天，
-   * 是這幾支裡最便宜的一支。
+   * 少一支查詢，而且少掉的正是最大的那一支。
+   *
+   * getDailyTotals 同理：它一支就餵飽了「今天花多少」「七天小圖」「連續記帳」
+   * 「跟上個月同一天比」「月底預估」五個地方。要是每個各查一支，這頁就要排隊九次。
    */
   const categories = await getCategories({ activeOnly: false });
-  const dayTotals = await getDayTotals(today);
+  const daily = await getDailyTotals();
   const trend = await getMonthlyTotals(6);
   const recent = await getTransactions({}, 4);
   const openSettlements = await getSettlements('open');
+
+  const pulse = derivePulse(daily);
 
   const quickDates = [
     { iso: today, label: '今天' },
@@ -82,7 +87,7 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-[1.6rem] leading-tight font-medium">{greeting()}，Gino</h1>
-            <p className="mt-1.5 text-sm text-text-muted">{todayLine(dayTotals)}</p>
+            <p className="mt-1.5 text-sm text-text-muted">{todayLine(pulse)}</p>
           </div>
           <p className="tabular shrink-0 pt-1.5 text-xs text-text-faint">
             {formatDate(today)} 週{formatWeekday(today)}
@@ -109,8 +114,7 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
           label={formatMonthShort(month)}
           href="/summary"
           linkLabel="月結算"
-          trend={trend}
-          activeMonth={month}
+          pulse={pulse}
         />
       </section>
 
@@ -141,8 +145,11 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
  * 沒記東西的時候給的是「今天還沒記」而不是「花了 0」：0 看起來像事實，
  * 但實際上多半是還沒記，講錯話比不講話糟。
  */
-function todayLine(t: DayTotals): string {
-  if (t.count === 0) return '今天還沒記帳';
+function todayLine({ today: t, streak }: Pulse): string {
+  // 一天都還沒記的時候，「連續 5 天」是提醒也是台階，比乾巴巴一句「還沒記帳」好
+  if (t.count === 0) {
+    return streak > 1 ? `今天還沒記帳　·　已經連續 ${streak} 天了` : '今天還沒記帳';
+  }
 
   const communal = t.communalCount > 0 ? `　·　開伙 ${t.communalCount} 次` : '';
   if (t.expense > 0) return `今天花了 NT$${formatAmount(t.expense)}${communal}`;

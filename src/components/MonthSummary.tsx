@@ -1,9 +1,10 @@
 import Link from 'next/link';
 
 import { formatAmount } from '@/lib/format';
-import type { MonthSummary as Summary, MonthTotals } from '@/lib/queries';
+import type { MonthSummary as Summary, Pulse } from '@/lib/queries';
 
-import { TrendChart } from './TrendChart';
+import { CompareLine } from './CompareLine';
+import { WeekChart } from './WeekChart';
 
 /**
  * 月結算卡片。規格書 2.2 要求固定與變動分開看、暫付款不混進一般支出，
@@ -17,8 +18,7 @@ export function MonthSummary({
   label = '本月',
   href,
   linkLabel = '看明細',
-  trend,
-  activeMonth,
+  pulse,
 }: {
   summary: Summary;
   /** 卡片左上角的小標，例如「8 月」 */
@@ -26,13 +26,15 @@ export function MonthSummary({
   /** 右上角連去哪；不給就不顯示 */
   href?: string;
   linkLabel?: string;
-  /** 給了就在卡片下半部畫近幾個月的趨勢 */
-  trend?: MonthTotals[];
-  activeMonth?: string;
+  /** 給了就多畫「跟上個月比」「月底預估」與下半部的七天小圖 */
+  pulse?: Pulse;
 }) {
   const totalExpense = summary.variableExpense + summary.fixedExpense;
   const hasSide = summary.income > 0 || summary.advance > 0;
-  const hasFooter = summary.communalCount > 0 || summary.estimatedCount > 0;
+  const footer: string[] = [];
+  if (pulse?.projection) footer.push(`照這個速度，${label}大概 ${formatAmount(pulse.projection)}`);
+  if (summary.communalCount > 0) footer.push(`開伙 ${summary.communalCount} 次`);
+  if (summary.estimatedCount > 0) footer.push(`${summary.estimatedCount} 筆是估算金額`);
 
   return (
     <div
@@ -53,6 +55,15 @@ export function MonthSummary({
         </div>
 
         <p className="tabular mt-1 text-[2.25rem] leading-none">{formatAmount(totalExpense)}</p>
+
+        {/* 一個數字沒有參照點看不出鬆緊，所以緊接著就給「跟上個月同期比」 */}
+        {pulse && (
+          <CompareLine
+            current={pulse.monthToDate}
+            previous={pulse.lastMonthToDate}
+            label="上個月同一時候"
+          />
+        )}
 
         {/* 變動與固定的比例，一眼看出這個月的錢是「日常花掉」還是「本來就要付」 */}
         {totalExpense > 0 && (
@@ -100,23 +111,24 @@ export function MonthSummary({
           </div>
         )}
 
-        {hasFooter && (
+        {footer.length > 0 && (
           <p className="mt-3.5 border-t border-border pt-3 text-xs text-text-faint">
-            {summary.communalCount > 0 && `開伙 ${summary.communalCount} 次`}
-            {summary.communalCount > 0 && summary.estimatedCount > 0 && '　·　'}
-            {summary.estimatedCount > 0 && `${summary.estimatedCount} 筆是估算金額`}
+            {footer.join('　·　')}
           </p>
         )}
       </div>
 
-      {trend && (
+      {pulse && (
         <div className="border-t border-border bg-bg/30 px-5 pt-4 pb-3">
-          <TrendChart
-            data={trend}
-            activeMonth={activeMonth}
-            hrefFor={(m) => `/summary?month=${m}`}
-            compact
-          />
+          <div className="mb-2.5 flex items-baseline justify-between">
+            <p className="text-xs text-text-faint">最近七天</p>
+            {pulse.streak > 1 && (
+              <p className="text-xs text-text-faint">
+                連續記帳 <span className="tabular text-text-muted">{pulse.streak}</span> 天
+              </p>
+            )}
+          </div>
+          <WeekChart data={pulse.week} />
         </div>
       )}
     </div>

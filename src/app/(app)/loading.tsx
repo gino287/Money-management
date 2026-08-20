@@ -27,7 +27,8 @@ export default function Loading() {
         <div className="h-12 rounded-[var(--radius)] bg-surface" />
       </div>
 
-      <div className="h-56 rounded-[var(--radius-lg)] bg-surface" />
+      {/* 月結算卡片：數字 + 跟上個月比 + 七天小圖 */}
+      <div className="h-72 rounded-[var(--radius-lg)] bg-surface" />
 
       <div className="space-y-2">
         <div className="h-4 w-16 rounded bg-surface" />

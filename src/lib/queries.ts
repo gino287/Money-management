@@ -11,7 +11,7 @@ import {
   type TransactionKind,
 } from '@/db/schema';
 
-import { currentMonth, monthRange, shiftMonth } from './format';
+import { currentMonth, daysAgoISO, monthRange, shiftMonth } from './format';
 
 /** 分類快取的失效標籤。寫入端（actions/categories.ts）要用同一個字串 */
 export const CATEGORIES_TAG = 'categories';
@@ -469,6 +469,8 @@ export async function getCategoryBreakdown(month: string): Promise<CategorySlice
 }
 
 export type DayTotals = {
+  /** YYYY-MM-DD */
+  date: string;
   expense: number;
   income: number;
   count: number;
@@ -476,18 +478,34 @@ export type DayTotals = {
 };
 
 /**
- * 某一天的小結，給首頁最上面那一行「今天花了多少」用。
+ * 首頁那一支「每天花多少」的查詢要往回撈幾天。
  *
- * 刻意做得很小。首頁的查詢是排隊跑的（原因見 (app)/page.tsx 的長註解），
- * 多一支就多一次來回，所以只取真的會顯示的四個數字，而且 date 是等值比對、
- * 走得到索引，不像月度統計要掃半年。
- *
- * 暫付款不算進「今天花了多少」——規格書 2.2，那是先墊出去、之後會回來的錢。
+ * 75 天不是隨便挑的：`derivePulse` 要算「上個月同一天為止花了多少」，
+ * 最壞情況是今天 31 號、上個月也有 31 天，需要往回蓋到上個月 1 號＝ 62 天。
+ * 給到 75 有餘裕，順便讓「連續記帳」數得到兩個半月。
+ * 一天一列，75 列的聚合對資料庫來說跟一列沒兩樣。
  */
-export async function getDayTotals(date: string): Promise<DayTotals> {
-  const [row] = await read('當日小結', () =>
+export const PULSE_DAYS = 75;
+
+/**
+ * 近 N 天每天的小結。
+ *
+ * 一支查詢餵四個地方：招呼底下那行「今天花了多少」、七天小柱狀圖、
+ * 連續記帳天數、跟上個月同一天的比較。
+ * 首頁的查詢是排隊跑的（原因見 (app)/page.tsx 的長註解），能合併就合併。
+ *
+ * 沒有帳的日子也要出現在結果裡，否則圖上會少一根柱子、看起來像資料掉了，
+ * 而且連續天數會把「那天沒記」誤算成連著的。
+ */
+export async function getDailyTotals(days = PULSE_DAYS): Promise<DayTotals[]> {
+  const wanted: string[] = [];
+  for (let i = days - 1; i >= 0; i--) wanted.push(daysAgoISO(i));
+
+  const dayExpr = sql<string>`to_char(${transactions.date}, 'YYYY-MM-DD')`;
+  const rows = await read('每日統計', () =>
     db
       .select({
+        date: dayExpr,
         expense:
           sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'expense'), 0)`.mapWith(
             Number,
@@ -502,7 +520,87 @@ export async function getDayTotals(date: string): Promise<DayTotals> {
         ),
       })
       .from(transactions)
-      .where(eq(transactions.date, date)),
+      .where(gte(transactions.date, wanted[0]))
+      .groupBy(dayExpr),
   );
-  return row ?? { expense: 0, income: 0, count: 0, communalCount: 0 };
+
+  const found = new Map(rows.map((r) => [r.date, r]));
+  return wanted.map(
+    (date) => found.get(date) ?? { date, expense: 0, income: 0, count: 0, communalCount: 0 },
+  );
+}
+
+export type Pulse = {
+  today: DayTotals;
+  /** 最近七天，舊到新 */
+  week: DayTotals[];
+  /** 連續記帳幾天 */
+  streak: number;
+  /** 這個月到今天為止的支出 */
+  monthToDate: number;
+  /** 上個月到同一天為止的支出。撈回來的天數不夠蓋到上個月 1 號就是 null */
+  lastMonthToDate: number | null;
+  daysElapsed: number;
+  daysInMonth: number;
+  /** 照目前的速度，這個月大概會花多少。資料太少或月底了就是 null */
+  projection: number | null;
+};
+
+/**
+ * 把每日小結換算成首頁要顯示的幾個數字。純函式，不碰資料庫。
+ *
+ * 暫付款不算進任何一個支出數字（規格書 2.2），這在 getDailyTotals 的
+ * `filter (where kind = 'expense')` 就擋掉了，這裡不必再處理。
+ */
+export function derivePulse(daily: DayTotals[]): Pulse {
+  const today = daily[daily.length - 1];
+
+  /*
+   * 連續記帳天數。今天還沒記的話從昨天起算 ——
+   * 早上八點就跟人家說「連續中斷了」太苛，一天根本還沒過完。
+   * 昨天也沒有才算真的斷掉。
+   */
+  let streak = 0;
+  let i = daily.length - 1;
+  if (daily[i].count === 0) i--;
+  for (; i >= 0 && daily[i].count > 0; i--) streak++;
+
+  const month = today.date.slice(0, 7);
+  const previous = shiftMonth(month, -1);
+  const daysElapsed = Number(today.date.slice(8));
+
+  // 「到第幾天為止」用日期的日數比對，不是往回數幾天 ——
+  // 月份長度不一樣，往回數 30 天在 2 月會跨到上上個月去
+  const upTo = (m: string) =>
+    daily
+      .filter((d) => d.date.startsWith(m) && Number(d.date.slice(8)) <= daysElapsed)
+      .reduce((sum, d) => sum + d.expense, 0);
+
+  const monthToDate = upTo(month);
+  // 撈回來的區間沒蓋到上個月 1 號的話，加出來的數字會偏低，那寧可不講
+  const lastMonthToDate = daily[0].date <= `${previous}-01` ? upTo(previous) : null;
+
+  const [y, m] = month.split('-').map(Number);
+  const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+  /*
+   * 月底預估＝目前的日均 × 這個月的天數。
+   * 前兩天不預估：1 號吃一頓大餐就會推出一個嚇死人的數字，那不是資訊是噪音。
+   * 月底最後一天也不預估，那時候「預估」就等於實際，講了是廢話。
+   */
+  const projection =
+    daysElapsed >= 3 && daysElapsed < daysInMonth && monthToDate > 0
+      ? Math.round((monthToDate / daysElapsed) * daysInMonth)
+      : null;
+
+  return {
+    today,
+    week: daily.slice(-7),
+    streak,
+    monthToDate,
+    lastMonthToDate,
+    daysElapsed,
+    daysInMonth,
+    projection,
+  };
 }
