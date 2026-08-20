@@ -83,10 +83,27 @@ async function openMarks(page) {
   if (!(await marks.evaluate((el) => el.open))) await marks.locator('summary').click();
 }
 
+/** 首頁載好了沒。口語輸入框永遠在，手動表單則是預設收起來的 */
+const homeReady = (page, timeout = 20000) =>
+  page.getByPlaceholder('用講的：剛剛午餐 150').waitFor({ state: 'visible', timeout });
+
+/**
+ * 首頁的手動表單預設收起來，要先按「自己填」才展開。
+ * 展開後才點得到性質、分類、日期那些按鈕。
+ */
+async function openForm(page, timeout = 20000) {
+  await homeReady(page, timeout);
+  const toggle = page.getByRole('button', { name: '自己填' });
+  if (await toggle.isVisible()) {
+    await toggle.click();
+    await page.getByRole('button', { name: '收起來' }).waitFor({ state: 'visible', timeout: 5000 });
+  }
+}
+
 /** 用首頁表單記一筆，走 Gino 真正會走的路徑 */
 async function record(page, e) {
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+  await openForm(page);
 
   if (e.kind && e.kind !== '支出') {
     await page.getByRole('button', { name: e.kind, exact: true }).click();
@@ -169,7 +186,7 @@ try {
 
   console.log('\n【月結算：固定／變動／暫付款分開】');
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+  await homeReady(page);
   const summary = await page.getByTestId('month-summary').innerText();
   const seen = summary.split('|').join(' ');
   check(
@@ -188,9 +205,55 @@ try {
     summary.includes(money(base.advance + 500)),
     seen,
   );
+  // 限定在月結算卡片裡找：招呼底下的「今天」那一行也會講開伙幾次，
+  // 不指名的話兩個都會被算到，數字對了測試反而會掛
   check(
     `開伙次數看得到（${base.communal + 1} 次）`,
-    (await page.getByText(`開伙 ${base.communal + 1} 次`).count()) === 1,
+    (await page
+      .getByTestId('month-summary')
+      .getByText(`開伙 ${base.communal + 1} 次`)
+      .count()) === 1,
+  );
+
+  console.log();
+  console.log('【首頁：第一眼要乾淨】');
+  await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+  await homeReady(page);
+  /*
+   * 收起來與否要量高度。
+   * 不能用 Playwright 的 isVisible()：收合是靠外層 grid 把高度壓成 0 再 overflow 裁掉，
+   * 裡面的按鈕自己仍然有一個 bounding box，它就會回報「看得見」。
+   * 使用者看不看得到，看的是外層那個容器的高度。
+   */
+  const formHeight = (p) =>
+    p.locator('#manual-form > div').evaluate((el) => el.getBoundingClientRect().height);
+  const settled = (p, want) =>
+    p.waitForFunction(
+      (tall) => {
+        const el = document.querySelector('#manual-form > div');
+        if (!el) return false;
+        const h = el.getBoundingClientRect().height;
+        return tall ? h > 100 : h < 1;
+      },
+      want,
+      { timeout: 5000 },
+    );
+
+  check('進首頁先看到打招呼', (await page.getByText(/，Gino$/).count()) === 1);
+  check('今天的狀況有一行話', (await page.getByText(/今天(還沒記帳|花了|記了)/).count()) === 1);
+  check('口語輸入框永遠露在外面', await page.getByPlaceholder('用講的：剛剛午餐 150').isVisible());
+  check('手動表單預設收起來', (await formHeight(page)) < 1);
+  await page.getByRole('button', { name: '自己填' }).click();
+  await settled(page, true);
+  check('按「自己填」會展開', true);
+  await page.getByRole('button', { name: '收起來' }).click();
+  await settled(page, false);
+  check('按「收起來」會收回去', true);
+
+  // 收起來的時候鍵盤不能 Tab 進看不見的表單裡
+  check(
+    '收起來時表單不吃鍵盤焦點',
+    await page.locator('#manual-form').evaluate((el) => el.hasAttribute('inert')),
   );
 
   console.log();
@@ -198,7 +261,7 @@ try {
   await page.goto(`${BASE}/?say=${encodeURIComponent(`${MARK} 剛剛午餐 88`)}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 25000 });
+  await homeReady(page, 25000);
   check(
     '?say= 會把口語輸入框先填好',
     (await page.getByPlaceholder('用講的：剛剛午餐 150').inputValue()) === `${MARK} 剛剛午餐 88`,
@@ -310,7 +373,7 @@ try {
   await page.getByRole('button', { name: '標記結清' }).click();
   await page.getByText('都結清了').waitFor({ timeout: 25000 });
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+  await homeReady(page);
   check('結清後提醒消失', (await page.getByText(/還有 .* 筆沒結清/).count()) === 0);
 
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
@@ -335,7 +398,7 @@ try {
   check('看得到用過幾筆', (await row.getByText('用過 1 筆').count()) === 1);
 
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+  await openForm(page);
   check(
     '停用後新增表單不再出現該分類',
     (await page.getByRole('button', { name: `${MARK}臨時分類` }).count()) === 0,
@@ -373,7 +436,7 @@ try {
 
   console.log('\n【表單驗證】');
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+  await openForm(page);
   await page.getByPlaceholder('0', { exact: true }).fill('100');
   await page.getByRole('button', { name: '記一筆' }).click();
   await page.getByText('請選一個分類').waitFor({ timeout: 25000 });
@@ -406,7 +469,7 @@ try {
     console.log('  － 沒有 DEEPSEEK_API_KEY，跳過');
   } else {
     await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-    await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+    await homeReady(page);
     await page.getByPlaceholder('用講的：剛剛午餐 150').fill(`${MARK} 今天中午吃便當 123 元`);
     await page.getByRole('button', { name: '送出' }).click();
 
@@ -443,6 +506,7 @@ try {
 
     // 看不懂的句子不該預填任何東西，也不該把手動填到一半的東西清掉
     await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+    await openForm(page);
     await page.getByPlaceholder('0', { exact: true }).fill('77');
     await page.getByPlaceholder('用講的：剛剛午餐 150').fill(`${MARK} 今天天氣真好`);
     await page.getByRole('button', { name: '送出' }).click();
@@ -503,13 +567,39 @@ try {
       return { status: res.status, reply: replies[before]?.messages?.[0]?.text ?? null };
     };
 
+    /*
+     * 這一段的「改成」「刪掉」是對『最近一筆 LINE 紀錄』動手的，
+     * 而那一筆有可能是 Gino 自己剛剛用 LINE 記的真帳。
+     *
+     * 2026-08-21 就這樣刪掉過他早上記的一筆晚餐 20 元 ——
+     * 測試資料刪完之後又送了一次「刪掉」去驗『沒東西可刪』，
+     * 結果指令往下找，找到的就是真的那筆。
+     *
+     * 所以：先數清楚帳本裡有沒有「不是 [E2E] 的、12 小時內的」LINE 紀錄。
+     * 有的話，會誤傷的那幾項一律跳過，不是想辦法繞過去。
+     * 測試絕對不可以碰到真的帳，寧可少驗一項。
+     */
+    const realLine = await sql`
+      select count(*)::int as n from transactions
+      where source = 'line'
+        and created_at > now() - interval '12 hours'
+        and (raw_input_id is null
+             or raw_input_id not in (select id from raw_inputs where text like ${MARK + '%'}))`;
+    const hasRealLine = realLine[0].n > 0;
+    if (hasRealLine) {
+      console.log(`  － 帳本裡有 ${realLine[0].n} 筆真的 LINE 紀錄，會動到它的項目跳過`);
+    }
+
     try {
       const bad = await say('午餐 55', { signed: false });
       check('簽章不對就擋下來', bad.status === 401);
 
       const stranger = await say(`${MARK} 午餐 55`, { userId: 'Usomeone-else' });
-      const strangerRows =
-        await sql`select count(*)::int as n from transactions where source = 'line'`;
+      // 只數自己的測試資料。整張表的 source='line' 會把 Gino 真的紀錄也數進來
+      const strangerRows = await sql`
+        select count(*)::int as n from transactions
+        where source = 'line'
+          and raw_input_id in (select id from raw_inputs where text like ${MARK + '%'})`;
       check(
         '別人傳訊息不會被記帳',
         stranger.status === 200 && stranger.reply === null && strangerRows[0].n === 0,
@@ -523,9 +613,17 @@ try {
       check('回覆訊息說得出記了什麼', /記好了/.test(recorded.reply ?? ''));
       check('原句有存下來並標記採用', Boolean(row?.raw_input_id));
 
+      // 最近一筆必須是自己剛剛記的那筆，才敢對它下「改成」「刪掉」
+      const [mine] = row?.raw_input_id
+        ? await sql`select id from raw_inputs where id = ${row.raw_input_id} and text like ${MARK + '%'}`
+        : [];
+
       if (!row) {
         // 沒記成功就別再往下戳，後面每一項都會踩到 undefined 讓整支腳本中斷
         check('LINE 後續檢查（記帳沒成功，跳過）', false, recorded.reply ?? '沒有回覆');
+      } else if (!mine) {
+        // 走到這裡代表最近一筆不是我們插進去的，那「改成／刪掉」會打到別人身上
+        console.log('  － 最近一筆 LINE 紀錄不是這次測試記的，改／刪那幾項跳過');
       } else {
       const amended = await say('改成 88');
       const [after] = await sql`
@@ -541,8 +639,14 @@ try {
       check('回「刪掉」就把那筆刪掉', left[0].n === 0);
       check('刪掉也會回一句', /刪掉了/.test(removed.reply ?? ''));
 
-      const nothing = await say('刪掉');
-      check('沒有東西可刪時不會炸掉', nothing.status === 200 && /沒有/.test(nothing.reply ?? ''));
+      if (hasRealLine) {
+        // 這一項一定要在「一筆 LINE 紀錄都不剩」的狀態下驗，
+        // 有真帳在的時候驗它，等於叫系統去刪 Gino 的東西
+        console.log('  － 「沒有東西可刪」這項會刪到真的紀錄，跳過');
+      } else {
+        const nothing = await say('刪掉');
+        check('沒有東西可刪時不會炸掉', nothing.status === 200 && /沒有/.test(nothing.reply ?? ''));
+      }
 
       const help = await say('說明');
       check('回「說明」看得到用法', /記帳/.test(help.reply ?? ''));
@@ -558,7 +662,7 @@ try {
 
   console.log('\n【畫面截圖】');
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 20000 });
+  await homeReady(page);
   await page.screenshot({ path: 'screenshots/desktop-home.png', fullPage: true });
 
   const phone = await browser.newContext({ ...devices['iPhone 13'], baseURL: BASE });
@@ -566,8 +670,8 @@ try {
   await p2.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' });
   await p2.getByPlaceholder('密碼').fill(process.env.APP_PASSWORD);
   await p2.getByRole('button', { name: '進入' }).click();
-  await p2.getByRole('button', { name: '記一筆' }).waitFor({ timeout: 25000 });
-  check('iPhone 尺寸下也能登入並看到記帳表單', true);
+  await homeReady(p2, 25000);
+  check('iPhone 尺寸下也能登入並看到記帳頁', true);
   await p2.screenshot({ path: 'screenshots/iphone-home.png', fullPage: true });
   await p2.goto(`${BASE}/transactions`, { waitUntil: 'domcontentloaded' });
   await p2.getByText('明細').first().waitFor({ timeout: 20000 });

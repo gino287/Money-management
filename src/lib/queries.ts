@@ -467,3 +467,42 @@ export async function getCategoryBreakdown(month: string): Promise<CategorySlice
       .orderBy(desc(sql`sum(${transactions.amount})`)),
   );
 }
+
+export type DayTotals = {
+  expense: number;
+  income: number;
+  count: number;
+  communalCount: number;
+};
+
+/**
+ * 某一天的小結，給首頁最上面那一行「今天花了多少」用。
+ *
+ * 刻意做得很小。首頁的查詢是排隊跑的（原因見 (app)/page.tsx 的長註解），
+ * 多一支就多一次來回，所以只取真的會顯示的四個數字，而且 date 是等值比對、
+ * 走得到索引，不像月度統計要掃半年。
+ *
+ * 暫付款不算進「今天花了多少」——規格書 2.2，那是先墊出去、之後會回來的錢。
+ */
+export async function getDayTotals(date: string): Promise<DayTotals> {
+  const [row] = await read('當日小結', () =>
+    db
+      .select({
+        expense:
+          sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'expense'), 0)`.mapWith(
+            Number,
+          ),
+        income:
+          sql<number>`coalesce(sum(${transactions.amount}) filter (where ${transactions.kind} = 'income'), 0)`.mapWith(
+            Number,
+          ),
+        count: sql<number>`count(*)`.mapWith(Number),
+        communalCount: sql<number>`count(*) filter (where ${transactions.isCommunal})`.mapWith(
+          Number,
+        ),
+      })
+      .from(transactions)
+      .where(eq(transactions.date, date)),
+  );
+  return row ?? { expense: 0, income: 0, count: 0, communalCount: 0 };
+}

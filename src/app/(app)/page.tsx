@@ -7,6 +7,7 @@ import { TransactionList } from '@/components/TransactionList';
 import {
   currentMonth,
   daysAgoISO,
+  formatAmount,
   formatDate,
   formatMonthShort,
   formatWeekday,
@@ -15,10 +16,12 @@ import {
 } from '@/lib/format';
 import {
   getCategories,
+  getDayTotals,
   getMonthlyTotals,
   getSettlements,
   getTransactions,
   summarizeTotals,
+  type DayTotals,
 } from '@/lib/queries';
 
 import { parseSentence } from '../actions/parse';
@@ -57,9 +60,11 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
    *
    * 也因為這樣，這一頁的查詢數要斤斤計較。月結算的數字改成從 getMonthlyTotals
    * 的聚合結果直接算（summarizeTotals），不再另外撈當月每一筆回來加總 ——
-   * 少一支查詢，而且少掉的正是最大的那一支。
+   * 少一支查詢，而且少掉的正是最大的那一支。getDayTotals 是等值比對單一天，
+   * 是這幾支裡最便宜的一支。
    */
   const categories = await getCategories({ activeOnly: false });
+  const dayTotals = await getDayTotals(today);
   const trend = await getMonthlyTotals(6);
   const recent = await getTransactions({}, 4);
   const openSettlements = await getSettlements('open');
@@ -72,20 +77,22 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
 
   return (
     <div className="space-y-6">
-      {/* 第一層：今天是哪天、有沒有事情擱著 */}
-      <header className="space-y-3 pt-1">
-        <div className="flex items-baseline justify-between gap-3">
-          <h1 className="text-xl">{greeting()}</h1>
-          <p className="tabular text-xs text-text-faint">
+      {/* 第一層：打個招呼、今天過得怎樣、有沒有事情擱著 */}
+      <header className="space-y-3.5 pt-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-[1.6rem] leading-tight font-medium">{greeting()}，Gino</h1>
+            <p className="mt-1.5 text-sm text-text-muted">{todayLine(dayTotals)}</p>
+          </div>
+          <p className="tabular shrink-0 pt-1.5 text-xs text-text-faint">
             {formatDate(today)} 週{formatWeekday(today)}
           </p>
         </div>
         <SettlementAlert items={openSettlements} />
       </header>
 
-      {/* 第二層：這頁真正要做的事 */}
+      {/* 第二層：這頁真正要做的事。預設只露出一個輸入框，其餘按「自己填」才展開 */}
       <section className="rounded-[var(--radius-lg)] border border-border bg-surface p-4 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset]">
-        <h2 className="mb-3 px-0.5 text-sm text-text-muted">記一筆</h2>
         <QuickEntry
           parseAction={parseSentence}
           createAction={createTransaction}
@@ -122,4 +129,23 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
       </section>
     </div>
   );
+}
+
+/**
+ * 招呼底下那一行。
+ *
+ * 只講今天的事 —— 月結算在下面有一整張卡片，這裡再放月份數字只是重複。
+ * 收入也不放這裡：一個月進帳兩三次，天天佔著一行不划算，而且長到會折行。
+ * 手機上這一行折成兩行，整個招呼區就散掉了，所以最多兩截。
+ *
+ * 沒記東西的時候給的是「今天還沒記」而不是「花了 0」：0 看起來像事實，
+ * 但實際上多半是還沒記，講錯話比不講話糟。
+ */
+function todayLine(t: DayTotals): string {
+  if (t.count === 0) return '今天還沒記帳';
+
+  const communal = t.communalCount > 0 ? `　·　開伙 ${t.communalCount} 次` : '';
+  if (t.expense > 0) return `今天花了 NT$${formatAmount(t.expense)}${communal}`;
+  if (t.communalCount > 0) return `今天開伙 ${t.communalCount} 次`;
+  return `今天記了 ${t.count} 筆`;
 }
