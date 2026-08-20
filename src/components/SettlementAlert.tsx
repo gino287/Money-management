@@ -1,16 +1,19 @@
 import Link from 'next/link';
 
-import type { Settlement } from '@/db/schema';
 import { formatAmount } from '@/lib/format';
+import type { SettlementRow } from '@/lib/queries';
 
 /**
- * 規格書 2.2：這類項目過去在月結算時被漏掉過。
- * 所以只要還有沒結清的，首頁最上方就一直看得到，不收合、不能關掉。
+ * 規格書 2.2：這類項目過去在月結算時被漏掉過，所以要一直看得到。
  *
- * 但它只是提醒，不是清單 —— 壓成一行，細節在 /settlements。
- * 首頁擺三筆明細會跟下面的記帳表單搶注意力。
+ * 但**「一直看得到」不等於「天天擋在首頁」**。這裡收到的已經是篩過的
+ * 「該追的」（到期、過期、沒寫時間），押金那種要等到 2027 年的不會進來 ——
+ * 一個你無法解決卻天天在叫的提醒，最後只會逼人為了讓它閉嘴而按下結清，
+ * 那等於系統教人在資料上說謊。完整清單永遠在 /settlements。
+ *
+ * 它只是提醒不是清單，所以壓成一行；首頁擺三筆明細會跟記帳表單搶注意力。
  */
-export function SettlementAlert({ items }: { items: Settlement[] }) {
+export function SettlementAlert({ items }: { items: SettlementRow[] }) {
   if (items.length === 0) return null;
 
   const known = items.filter((i) => i.expectedAmount !== null);
@@ -22,7 +25,7 @@ export function SettlementAlert({ items }: { items: Settlement[] }) {
       className="flex items-center gap-3 rounded-[var(--radius)] border border-estimated/30 bg-estimated/5 px-4 py-3 transition-colors hover:bg-estimated/10"
     >
       <span className="min-w-0 flex-1 truncate text-sm text-estimated">
-        還有 {items.length} 筆沒結清
+        有 {items.length} 筆該追了
         {items.length === 1 && (
           <span className="ml-2 text-xs text-text-muted">{items[0].title}</span>
         )}

@@ -89,6 +89,21 @@ export function SettlementForm() {
         className="tabular w-full rounded-[var(--radius)] border border-border bg-bg px-3 py-2.5 outline-none focus:border-border-strong"
       />
 
+      {/*
+        大概什麼時候會回來。填了的話，時間還沒到就不會在首頁吵人 ——
+        押金要等到明年退租，天天提醒只會讓人想把它按掉。
+      */}
+      <label className="block">
+        <span className="mb-1 block px-1 text-xs text-text-faint">
+          大概什麼時候會回來（不知道就留空，留空會一直在首頁提醒）
+        </span>
+        <input
+          type="month"
+          name="dueMonth"
+          className="tabular w-full rounded-[var(--radius)] border border-border bg-bg px-3 py-2.5 outline-none focus:border-border-strong"
+        />
+      </label>
+
       <input
         name="note"
         placeholder="備註（可留空）"

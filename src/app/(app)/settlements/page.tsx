@@ -1,83 +1,67 @@
-import {
-  deleteSettlement,
-  reopenSettlement,
-  settleSettlement,
-} from '@/app/actions/settlements';
+import { reopenSettlement } from '@/app/actions/settlements';
 import { PageHeader } from '@/components/PageHeader';
 import { SettlementForm } from '@/components/SettlementForm';
-import { formatAmount } from '@/lib/format';
-import { getSettlements } from '@/lib/queries';
+import { SettlementItem } from '@/components/SettlementItem';
+import { getCategories, getSettlements, isDue } from '@/lib/queries';
 
 export const dynamic = 'force-dynamic';
 
-const DIRECTION_LABEL = { receivable: '會回來', payable: '要付出去' } as const;
-
 export default async function SettlementsPage() {
   const all = await getSettlements();
+  const categories = await getCategories({ activeOnly: false });
+
   const open = all.filter((s) => s.status === 'open');
   const settled = all.filter((s) => s.status === 'settled');
+
+  /*
+   * 分成兩區，因為這兩種東西要用完全不同的態度看：
+   *
+   * 「快到了」是這個月該去追的（到期、過期、或連自己都說不出什麼時候回來的）——
+   * 這幾筆才會出現在首頁。
+   * 「還早」是押金那種要等到明年退租的，看得到、不會消失，但平常不吵人。
+   */
+  const due = open.filter((s) => isDue(s));
+  const later = open.filter((s) => !isDue(s));
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="待結清"
-        description="暫付款、押金、借出去的錢、待回收的補助。結清要自己確認，系統不會自動改帳。"
+        description="暫付款、押金、借出去的錢、待回收的補助。收回可以分好幾次記，結清要自己確認。"
       />
 
       <SettlementForm />
 
       <section>
-        <h2 className="mb-2 px-1 text-sm text-text-muted">未結清 {open.length > 0 && `(${open.length})`}</h2>
-        {open.length === 0 ? (
+        <h2 className="mb-2 px-1 text-sm text-text-muted">
+          該追的 {due.length > 0 && `(${due.length})`}
+        </h2>
+        {due.length === 0 ? (
           <p className="rounded-[var(--radius-lg)] border border-dashed border-border px-4 py-10 text-center text-sm text-text-faint">
-            都結清了
+            {later.length > 0 ? '這個月沒有要追的，下面那些還早' : '都結清了'}
           </p>
         ) : (
           <ul className="space-y-2">
-            {open.map((item) => (
-              <li
-                key={item.id}
-                className="rounded-[var(--radius-lg)] border border-estimated/25 bg-surface px-4 py-3.5"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm">{item.title}</p>
-                    <p className="mt-0.5 text-xs text-text-faint">
-                      {DIRECTION_LABEL[item.direction]}
-                      {' · '}
-                      {item.openedAt.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' })} 起
-                    </p>
-                    {item.note && <p className="mt-1 text-xs text-text-muted">{item.note}</p>}
-                  </div>
-                  <span className="tabular shrink-0 text-sm text-estimated">
-                    {item.expectedAmount === null ? '未定' : formatAmount(item.expectedAmount)}
-                  </span>
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <form action={settleSettlement} className="flex-1">
-                    <input type="hidden" name="id" value={item.id} />
-                    <button
-                      type="submit"
-                      className="w-full rounded-[var(--radius)] border border-accent/40 py-2 text-sm text-accent transition-colors hover:bg-accent-dim"
-                    >
-                      標記結清
-                    </button>
-                  </form>
-                  <form action={deleteSettlement}>
-                    <input type="hidden" name="id" value={item.id} />
-                    <button
-                      type="submit"
-                      className="rounded-[var(--radius)] border border-border px-3 py-2 text-sm text-text-faint transition-colors hover:text-expense"
-                    >
-                      刪除
-                    </button>
-                  </form>
-                </div>
-              </li>
+            {due.map((item) => (
+              <SettlementItem key={item.id} item={item} categories={categories} />
             ))}
           </ul>
         )}
       </section>
+
+      {later.length > 0 && (
+        <section>
+          <h2 className="mb-2 px-1 text-sm text-text-muted">還早（{later.length}）</h2>
+          <p className="mb-2 px-1 text-xs text-text-faint">
+            這些不會出現在首頁，時間到了才會跳出來提醒。
+          </p>
+          <ul className="space-y-2">
+            {later.map((item) => (
+              <SettlementItem key={item.id} item={item} categories={categories} />
+            ))}
+          </ul>
+        </section>
+      )}
 
       {settled.length > 0 && (
         <section>

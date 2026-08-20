@@ -23,6 +23,7 @@ import {
   getMonthlyTotals,
   getSettlements,
   getTransactions,
+  isDue,
   summarizeTotals,
   type MonthTotals,
   type Pulse,
@@ -73,7 +74,8 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
   const daily = await getDailyTotals();
   const trend = await getMonthlyTotals(6);
   const recent = await getTransactions({}, 4);
-  const openSettlements = await getSettlements('open');
+  // 只提醒該追的：到期、過期、或沒寫預計時間的。理由見 queries.ts 的 isDue
+  const openSettlements = (await getSettlements('open')).filter((s) => isDue(s));
 
   const pulse = derivePulse(daily);
 

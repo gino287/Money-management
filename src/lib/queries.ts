@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, ilike, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gte, ilike, lt, sql } from 'drizzle-orm';
 import { unstable_cache } from 'next/cache';
 import { cache } from 'react';
 
@@ -8,6 +8,7 @@ import {
   settlements,
   transactions,
   type CategoryKind,
+  type Settlement,
   type TransactionKind,
 } from '@/db/schema';
 
@@ -296,15 +297,47 @@ export async function getCategoryUsage(): Promise<Map<string, number>> {
   return new Map(rows.map((r) => [r.categoryId, r.count]));
 }
 
+export type SettlementRow = Settlement & {
+  /** 已經收回（或已經還掉）多少 —— 從綁在這個項目上的交易加總來的 */
+  received: number;
+};
+
+/**
+ * 待結清清單，含「已經收回多少」。
+ *
+ * 分次收回（借出 1,000、昨天還 500、今天再 500）不在這張表上改數字，
+ * 而是每一次都記成真的一筆帳再綁回來。這裡把它們加總 ——
+ * 待結清頁看到的「已收 1,000／共 1,000」永遠跟明細對得起來，
+ * 不會出現「這裡寫收回了，明細裡卻沒有那筆錢」。
+ */
 export const getSettlements = cache(async (status?: 'open' | 'settled') => {
-  return read('待結清清單', () =>
+  const rows = await read('待結清清單', () =>
     db
-      .select()
+      .select({
+        ...getTableColumns(settlements),
+        received: sql<number>`coalesce(sum(${transactions.amount}), 0)`.mapWith(Number),
+      })
       .from(settlements)
+      .leftJoin(transactions, eq(transactions.settlementId, settlements.id))
       .where(status ? eq(settlements.status, status) : undefined)
+      .groupBy(settlements.id)
       .orderBy(asc(settlements.status), desc(settlements.openedAt)),
   );
+  return rows as SettlementRow[];
 });
+
+/**
+ * 首頁與導覽列該不該為了這一筆吵人。
+ *
+ * 只有三種要吵：這個月到期的、已經過期的、沒寫預計時間的。
+ * 押金要等到 2027 年退租才拿得回來，天天在首頁擋路只會讓人為了讓它閉嘴
+ * 而按下結清 —— 那是在資料上說謊，而且是系統逼的。
+ *
+ * 沒寫時間的**故意**要吵：連自己都說不出什麼時候會回來的錢，才最容易被忘記。
+ */
+export function isDue(item: Pick<Settlement, 'dueMonth'>, month = currentMonth()): boolean {
+  return item.dueMonth === null || item.dueMonth <= month;
+}
 
 /**
  * 單一分類。每次寫入交易都會呼叫它做驗證（見 actions/transactions.ts 的 parse），

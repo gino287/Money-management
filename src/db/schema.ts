@@ -94,6 +94,14 @@ export const transactions = pgTable(
     isEstimated: boolean('is_estimated').notNull().default(false),
     source: text('source').$type<TransactionSource>().notNull().default('manual'),
     rawInputId: uuid('raw_input_id').references(() => rawInputs.id, { onDelete: 'set null' }),
+    /**
+     * 這筆是某個待結清項目的收回（或償還）。
+     *
+     * 「借出去 1,000，昨天還 500、今天又 500」不另外記在待結清那張表上 ——
+     * 每一次收回都是真的一筆收入，綁回來就算得出還剩多少。
+     * 錢只有一份紀錄，待結清頁上的「已收 1,000」是算出來的，不是另外維護的數字。
+     */
+    settlementId: uuid('settlement_id'),
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -117,6 +125,15 @@ export const settlements = pgTable(
     expectedAmount: amount('expected_amount'),
     direction: text('direction').$type<SettlementDirection>().notNull(),
     status: text('status').$type<'open' | 'settled'>().notNull().default('open'),
+    /**
+     * 大概什麼時候會回來（`YYYY-MM`，不知道就留 null）。
+     *
+     * 首頁只提醒「這個月到期、已經過期、沒寫時間」的三種。押金要等到 2027 年退租，
+     * 天天在首頁擋路只會讓人為了讓它閉嘴而按下結清 —— 那是在資料上說謊，
+     * 而且是系統逼的。沒結清的項目永遠不會消失（規格書 2.2），
+     * 但「看得到」不等於「天天擋在路中間」。
+     */
+    dueMonth: text('due_month'),
     /** 起因的那筆交易，例如當初墊出去的暫付款 */
     originTransactionId: uuid('origin_transaction_id').references(() => transactions.id, {
       onDelete: 'set null',

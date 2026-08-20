@@ -392,8 +392,11 @@ try {
    * 按鈕也一定要限定在測試自己那一列 —— 頁面上有好幾顆「標記結清」，
    * 沒限定的話 Playwright 會因為選到多個而中斷，或更糟：結清掉真的項目。
    */
-  const baseOpen = (await sql`select count(*)::int as n from settlements where status = 'open'`)[0]
-    .n;
+  const baseOpen = (
+    await sql`
+      select count(*)::int as n from settlements
+      where status = 'open' and (due_month is null or due_month <= ${currentMonth})`
+  )[0].n;
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: '＋ 新增待結清項目' }).click();
   await page.getByPlaceholder(/押金待回收/).fill(`${MARK} 押金待回收`);
@@ -405,7 +408,7 @@ try {
   const mine = page.locator('li').filter({ hasText: `${MARK} 押金待回收` });
 
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByText(`還有 ${baseOpen + 1} 筆沒結清`).waitFor({ timeout: 20000 });
+  await page.getByText(`有 ${baseOpen + 1} 筆該追了`).waitFor({ timeout: 20000 });
   check('首頁常駐提醒出現', true);
   // 用 testid 而不是連結的無障礙名稱：名稱是「圖示徽章 + 文字」拼出來的，
   // 動一下版面順序就變，測試會為了排版變動而假失敗
@@ -414,12 +417,31 @@ try {
     (await page.getByTestId('open-count').innerText()) === String(baseOpen + 1),
   );
 
+  // 分次收回：借出去的錢常常是一次還一點，所以收回要能記好幾筆
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
+  await mine.getByRole('button', { name: '記一筆收回' }).click();
+  await mine.getByPlaceholder('收到多少').fill('3000');
+  await mine.getByRole('button', { name: '記下這筆收回' }).click();
+  await page.getByText('已收 3,000／共 8,000').waitFor({ timeout: 25000 });
+  check('可以只收回一部分', true);
+  check('算得出還剩多少', (await page.locator('body').innerText()).includes('還剩 5,000'));
+
+  // 收回一定要是真的一筆帳，不能只是在待結清那張表上改數字
+  const returned = await sql`
+    select t.amount::float8 as amount, t.kind from transactions t
+    join settlements s on s.id = t.settlement_id
+    where s.title = ${MARK + ' 押金待回收'}`;
+  check(
+    '收回的錢在明細裡是真的一筆收入',
+    returned.length === 1 && returned[0].amount === 3000 && returned[0].kind === 'income',
+    `實際 ${JSON.stringify(returned)}`,
+  );
+
   await mine.getByRole('button', { name: '標記結清' }).click();
   await mine.getByRole('button', { name: '還原' }).waitFor({ timeout: 25000 });
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
   await homeReady(page);
-  const stillOpen = await page.getByText(/還有 .* 筆沒結清/).count();
+  const stillOpen = await page.getByText(/筆該追了/).count();
   check(
     '結清後提醒少一筆',
     baseOpen === 0 ? stillOpen === 0 : stillOpen === 1,
@@ -430,6 +452,28 @@ try {
   await mine.getByRole('button', { name: '還原' }).click();
   await mine.getByRole('button', { name: '標記結清' }).waitFor({ timeout: 25000 });
   check('按錯可以還原', true);
+
+  /*
+   * 填了預計時間就不該再天天出現在首頁。
+   *
+   * 這是 Gino 2026-08-21 提的：押金要等到 2027 年退租才拿得回來，
+   * 一個「無法解決卻天天在叫」的提醒，最後只會逼人為了讓它閉嘴而按下結清 ——
+   * 那等於系統教人在資料上說謊。沒結清的永遠不會消失，但不必天天擋路。
+   */
+  await mine.getByRole('button', { name: '改時間' }).click();
+  await mine.locator('input[type="month"]').fill('2027-06');
+  await mine.getByRole('button', { name: '存' }).click();
+  await page.getByText('還早').first().waitFor({ timeout: 25000 });
+  check('填了預計時間就搬到「還早」', true);
+
+  await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
+  await homeReady(page);
+  const afterDue = await page.getByText(/筆該追了/).count();
+  check(
+    '時間還沒到就不在首頁吵人',
+    baseOpen === 0 ? afterDue === 0 : afterDue === 1,
+    baseOpen === 0 ? '' : `帳本裡另外還有 ${baseOpen} 筆該追的`,
+  );
 
   console.log('\n【分類：停用不影響舊紀錄】');
   await page.goto(`${BASE}/categories`, { waitUntil: 'domcontentloaded' });
