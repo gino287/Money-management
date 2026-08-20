@@ -45,3 +45,7 @@ next-env.d.ts
 /test-results/
 /playwright-report/
 /screenshots/
+
+# 舊的月度 Excel 帳本：真實收支數字，只留在 Gino 自己的電腦
+/匯入/*
+!/匯入/README.md
