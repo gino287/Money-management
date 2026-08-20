@@ -29,8 +29,12 @@ export type TransactionKind = (typeof TRANSACTION_KINDS)[number];
 export const CATEGORY_KINDS = ['expense', 'income'] as const;
 export type CategoryKind = (typeof CATEGORY_KINDS)[number];
 
-/** 資料來源。P1 只會有 manual，P2/P3 才會出現 web_agent 與 line */
-export const TRANSACTION_SOURCES = ['manual', 'web_agent', 'line'] as const;
+/**
+ * 資料來源。P1 只會有 manual，P2/P3 才會出現 web_agent 與 line。
+ * import 是 2026-03~08 舊 Excel 搬進來的那批（scripts/匯入.mjs），
+ * 標著它才有辦法「整批退回去」：delete from transactions where source = 'import'。
+ */
+export const TRANSACTION_SOURCES = ['manual', 'web_agent', 'line', 'import'] as const;
 export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
 
 /** 待結清方向：receivable = 錢會回來（暫付款、押金、補助）；payable = 錢要付出去（借款待還） */
