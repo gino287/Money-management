@@ -342,7 +342,9 @@ try {
   // 分類佔比
   check('分類佔比列得出房租', summaryPage.includes('房租'));
   check('分類佔比列得出餐食', summaryPage.includes('餐食'));
-  const pcts = [...summaryPage.matchAll(/(\d+)%/g)].map((m) => Number(m[1]));
+  // 只掃佔比那一塊：整頁掃會掃到「比上個月同一時候多 64%」那一行，加起來就爆掉
+  const breakdownText = await page.getByTestId('category-breakdown').innerText();
+  const pcts = [...breakdownText.matchAll(/(\d+)%/g)].map((m) => Number(m[1]));
   check(
     '各分類百分比加起來接近 100',
     pcts.length > 0 && Math.abs(pcts.reduce((a, b) => a + b, 0) - 100) <= pcts.length,
@@ -384,6 +386,14 @@ try {
   check('稽核看得到金額怎麼改的', diffText.includes('800') && diffText.includes('1,250'));
 
   console.log('\n【待結清：沒結清就一直看得到】');
+  /*
+   * Gino 帳本裡本來就有真的未結清項目（押金、租屋補助、媽媽借款），
+   * 所以不能假設「現在是 1 筆」。先數一次當基準，斷言都用基準加一。
+   * 按鈕也一定要限定在測試自己那一列 —— 頁面上有好幾顆「標記結清」，
+   * 沒限定的話 Playwright 會因為選到多個而中斷，或更糟：結清掉真的項目。
+   */
+  const baseOpen = (await sql`select count(*)::int as n from settlements where status = 'open'`)[0]
+    .n;
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: '＋ 新增待結清項目' }).click();
   await page.getByPlaceholder(/押金待回收/).fill(`${MARK} 押金待回收`);
@@ -392,23 +402,33 @@ try {
   await page.getByText(`${MARK} 押金待回收`).waitFor({ timeout: 25000 });
   check('新增待結清成功', true);
 
+  const mine = page.locator('li').filter({ hasText: `${MARK} 押金待回收` });
+
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
-  await page.getByText(/還有 1 筆沒結清/).waitFor({ timeout: 20000 });
+  await page.getByText(`還有 ${baseOpen + 1} 筆沒結清`).waitFor({ timeout: 20000 });
   check('首頁常駐提醒出現', true);
   // 用 testid 而不是連結的無障礙名稱：名稱是「圖示徽章 + 文字」拼出來的，
   // 動一下版面順序就變，測試會為了排版變動而假失敗
-  check('導覽列顯示未結清數量', (await page.getByTestId('open-count').innerText()) === '1');
+  check(
+    '導覽列顯示未結清數量',
+    (await page.getByTestId('open-count').innerText()) === String(baseOpen + 1),
+  );
 
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '標記結清' }).click();
-  await page.getByText('都結清了').waitFor({ timeout: 25000 });
+  await mine.getByRole('button', { name: '標記結清' }).click();
+  await mine.getByRole('button', { name: '還原' }).waitFor({ timeout: 25000 });
   await page.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' });
   await homeReady(page);
-  check('結清後提醒消失', (await page.getByText(/還有 .* 筆沒結清/).count()) === 0);
+  const stillOpen = await page.getByText(/還有 .* 筆沒結清/).count();
+  check(
+    '結清後提醒少一筆',
+    baseOpen === 0 ? stillOpen === 0 : stillOpen === 1,
+    baseOpen === 0 ? '' : `帳本裡另外還有 ${baseOpen} 筆真的未結清`,
+  );
 
   await page.goto(`${BASE}/settlements`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '還原' }).click();
-  await page.getByRole('button', { name: '標記結清' }).waitFor({ timeout: 25000 });
+  await mine.getByRole('button', { name: '還原' }).click();
+  await mine.getByRole('button', { name: '標記結清' }).waitFor({ timeout: 25000 });
   check('按錯可以還原', true);
 
   console.log('\n【分類：停用不影響舊紀錄】');

@@ -72,6 +72,9 @@ export function formatAmount(value: number): string {
 }
 
 export function formatSigned(value: number, kind: 'expense' | 'income' | 'advance'): string {
+  // 「−0」很怪。0 元的紀錄是「這天有記、但沒花錢」（開伙、回家吃、別人請客），
+  // 那不是一筆負的錢，就是 0
+  if (value === 0) return '0';
   const sign = kind === 'income' ? '+' : '−';
   return `${sign}${formatAmount(Math.abs(value))}`;
 }

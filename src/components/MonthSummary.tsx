@@ -1,7 +1,7 @@
 import Link from 'next/link';
 
 import { formatAmount } from '@/lib/format';
-import type { MonthSummary as Summary, Pulse } from '@/lib/queries';
+import type { Budget, MonthSummary as Summary, Pulse } from '@/lib/queries';
 
 import { CompareLine } from './CompareLine';
 import { WeekChart } from './WeekChart';
@@ -19,6 +19,8 @@ export function MonthSummary({
   href,
   linkLabel = '看明細',
   pulse,
+  budget,
+  fixedHint,
 }: {
   summary: Summary;
   /** 卡片左上角的小標，例如「8 月」 */
@@ -28,6 +30,10 @@ export function MonthSummary({
   linkLabel?: string;
   /** 給了就多畫「跟上個月比」「月底預估」與下半部的七天小圖 */
   pulse?: Pulse;
+  /** 收入扣掉固定支出還剩多少 */
+  budget?: Budget | null;
+  /** 「固定支出好像還沒記完」那一行 */
+  fixedHint?: string | null;
 }) {
   const totalExpense = summary.variableExpense + summary.fixedExpense;
   const hasSide = summary.income > 0 || summary.advance > 0;
@@ -110,6 +116,27 @@ export function MonthSummary({
             )}
           </div>
         )}
+
+        {/*
+          * 「還可以花多少」是這張卡片上唯一往前看的數字 —— 上面那些都在講已經發生的事。
+          * 放在收入那排底下、footer 上面，因為它要靠著收入與固定支出才讀得懂。
+          */}
+        {budget && (
+          <p className="mt-3.5 border-t border-border pt-3 text-sm">
+            <span className="text-xs text-text-faint">{label}還可以花</span>{' '}
+            <span className={`tabular ${budget.left < 0 ? 'text-expense' : 'text-text'}`}>
+              {budget.left < 0 ? '−' : ''}
+              {formatAmount(Math.abs(budget.left))}
+            </span>
+            {budget.perDay !== null && (
+              <span className="tabular text-xs text-text-faint">
+                　·　平均每天 {formatAmount(budget.perDay)}
+              </span>
+            )}
+          </p>
+        )}
+
+        {fixedHint && <p className="mt-2.5 text-xs text-estimated">{fixedHint}</p>}
 
         {footer.length > 0 && (
           <p className="mt-3.5 border-t border-border pt-3 text-xs text-text-faint">

@@ -1,13 +1,25 @@
 import Link from 'next/link';
 
+import { BudgetBlock } from '@/components/BudgetBlock';
 import { CategoryBreakdown } from '@/components/CategoryBreakdown';
 import { CompareLine } from '@/components/CompareLine';
+import { CumulativeChart } from '@/components/CumulativeChart';
+import { FixedCheck } from '@/components/FixedCheck';
 import { TrendChart } from '@/components/TrendChart';
-import { currentMonth, formatAmount, formatMonth, shiftMonth } from '@/lib/format';
 import {
+  currentMonth,
+  formatAmount,
+  formatMonth,
+  formatMonthShort,
+  shiftMonth,
+} from '@/lib/format';
+import {
+  deriveBudget,
+  deriveCumulative,
   derivePulse,
   getCategoryBreakdown,
   getDailyTotals,
+  getFixedCheck,
   getMonthlyTotals,
   getSettlements,
   getTransactions,
@@ -26,6 +38,7 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
   const trend = await getMonthlyTotals(6);
   const slices = await getCategoryBreakdown(month);
   const open = await getSettlements('open');
+  const fixedCheck = await getFixedCheck(month);
 
   const summary = summarize(rows);
   const totalExpense = summary.variableExpense + summary.fixedExpense;
@@ -42,6 +55,18 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
   const previous = shiftMonth(month, -1);
   const previousTotals = trend.find((t) => t.month === previous);
   const pulse = isThisMonth ? derivePulse(await getDailyTotals()) : null;
+
+  /*
+   * 「還可以花多少」與「累積下來」都是從已經查好的 trend 算的，不另外查資料庫。
+   * 這一頁的查詢數跟首頁一樣要省（見首頁那段註解）。
+   */
+  const daysLeft = pulse ? pulse.daysInMonth - pulse.daysElapsed + 1 : null;
+  // 房租還沒記的時候，那筆錢已經有主了，不能算進「還可以花」
+  const pendingFixed = fixedCheck
+    .filter((f) => f.previous > 0 && f.current === 0)
+    .reduce((sum, f) => sum + f.previous, 0);
+  const budget = deriveBudget(trend, month, daysLeft, pendingFixed);
+  const cumulative = deriveCumulative(trend);
 
   const compare = isThisMonth
     ? { current: pulse!.monthToDate, previous: pulse!.lastMonthToDate, label: '上個月同一時候' }
@@ -136,10 +161,25 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
         />
       </section>
 
+      <FixedCheck items={fixedCheck} />
+
+      {budget && (
+        <section>
+          <BudgetBlock budget={budget} label={isThisMonth ? '這個月' : formatMonthShort(month)} />
+        </section>
+      )}
+
       <section>
         <h2 className="mb-3 px-1 text-sm text-text-muted">近半年</h2>
         <div className="rounded-[var(--radius-lg)] border border-border bg-surface p-4">
           <TrendChart data={trend} activeMonth={month} hrefFor={(m) => `/summary?month=${m}`} />
+        </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 px-1 text-sm text-text-muted">存款走向</h2>
+        <div className="rounded-[var(--radius-lg)] border border-border bg-surface p-4">
+          <CumulativeChart data={cumulative} />
         </div>
       </section>
 
@@ -153,7 +193,10 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
             看明細 →
           </Link>
         </div>
-        <div className="rounded-[var(--radius-lg)] border border-border bg-surface p-5">
+        <div
+          data-testid="category-breakdown"
+          className="rounded-[var(--radius-lg)] border border-border bg-surface p-5"
+        >
           <CategoryBreakdown slices={slices} month={month} />
         </div>
       </section>

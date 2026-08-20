@@ -12,9 +12,11 @@ import {
   formatMonthShort,
   formatWeekday,
   greeting,
+  shiftMonth,
   todayISO,
 } from '@/lib/format';
 import {
+  deriveBudget,
   derivePulse,
   getCategories,
   getDailyTotals,
@@ -22,6 +24,7 @@ import {
   getSettlements,
   getTransactions,
   summarizeTotals,
+  type MonthTotals,
   type Pulse,
 } from '@/lib/queries';
 
@@ -74,6 +77,22 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
 
   const pulse = derivePulse(daily);
 
+  /*
+   * 「還可以花多少」跟「固定支出還沒記完」都從已經查好的 trend 算出來，不多查一支。
+   * 詳細的版本（哪一筆固定支出沒記、累積結餘走向）在月結算頁，那裡才多查一支去比對分類。
+   */
+  const pendingFixed = missingFixed(trend, month);
+  const budget = deriveBudget(
+    trend,
+    month,
+    pulse.daysInMonth - pulse.daysElapsed + 1,
+    pendingFixed,
+  );
+  const fixedHint =
+    pendingFixed > 0
+      ? `固定支出好像還沒記　·　上面已經先扣掉 ${formatAmount(pendingFixed)}`
+      : null;
+
   const quickDates = [
     { iso: today, label: '今天' },
     { iso: daysAgoISO(1), label: '昨天' },
@@ -115,6 +134,8 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
           href="/summary"
           linkLabel="月結算"
           pulse={pulse}
+          budget={budget}
+          fixedHint={fixedHint}
         />
       </section>
 
@@ -133,6 +154,28 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
       </section>
     </div>
   );
+}
+
+/**
+ * 這個月還沒記的固定支出大概是多少。
+ *
+ * 拿來從「還可以花多少」裡先扣掉 —— 房租還沒記的時候說「還可以花兩萬」是騙人的，
+ * 那一萬一千塊已經有主了。
+ *
+ * 首頁只比得出金額，比不出是哪一筆 —— 要知道是房租還是壇費得多查一支，
+ * 而這一頁的查詢數是有預算的（見上面那段註解）。所以首頁只負責讓人起疑，
+ * 月結算頁的 FixedCheck 才會指名道姓。
+ *
+ * 差一千塊以上才講：固定支出的金額本來就會小幅變動（壇費從 650 變成 700 過），
+ * 差幾十塊就跳提醒，兩個月後就沒人看了。
+ */
+function missingFixed(trend: MonthTotals[], month: string): number {
+  const current = trend.find((t) => t.month === month);
+  const previous = trend.find((t) => t.month === shiftMonth(month, -1));
+  if (!current || !previous) return 0;
+
+  const gap = previous.fixedExpense - current.fixedExpense;
+  return gap >= 1000 ? gap : 0;
 }
 
 /**

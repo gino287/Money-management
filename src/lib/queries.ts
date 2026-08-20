@@ -427,6 +427,143 @@ export async function getMonthlyTotals(months = 6): Promise<MonthTotals[]> {
   );
 }
 
+/**
+ * 「這個月還可以花多少」。
+ *
+ * Gino 的舊 Excel 每個月都手算這個數字（交接摘要那句「可用餘額約 $4,251／月（扣固定支出後）」），
+ * 那是整份檔案裡最實用的一格 —— 總支出只說了過去，這個數字才能拿來決定今天要不要外食。
+ *
+ * 收入為什麼可能用估的：Gino 的收入不規律（生活費、工讀、補助分開入帳，
+ * 而且常常月底才補登錄）。月初收入還是 0 的時候直接算，會得到「可用 −5,700」
+ * 這種嚇人又沒意義的數字，所以那時改用前三個月有收入的月份的平均，並且標明是估的。
+ *
+ * 兩邊都沒有就回 null（整個區塊不顯示）—— 猜一個數字給人看比不給更糟。
+ */
+export type Budget = {
+  /** 拿來算的收入 */
+  income: number;
+  /** 收入是用前幾個月估的，不是這個月真的入帳的 */
+  incomeIsEstimate: boolean;
+  fixed: number;
+  /** 已經花掉的變動支出 */
+  spent: number;
+  /** 收入扣掉固定支出，這個月可以自由花的錢 */
+  available: number;
+  /** 還剩多少 */
+  left: number;
+  /** 這個月還剩幾天（含今天）。過去的月份是 null */
+  daysLeft: number | null;
+  /** 剩下的錢平均每天還能花多少。已經透支或不是本月就是 null */
+  perDay: number | null;
+  /** 上個月有、這個月還沒記的固定支出。已經先從可用額度扣掉了 */
+  pendingFixed: number;
+};
+
+export function deriveBudget(
+  trend: MonthTotals[],
+  month: string,
+  daysLeft: number | null,
+  /**
+   * 還沒記的固定支出（房租那種）。一定要先扣掉 ——
+   * 房租還沒記的時候說「這個月還可以花 20,445」是騙人的，那一萬一千塊已經有主了。
+   */
+  pendingFixed = 0,
+): Budget | null {
+  const current = trend.find((t) => t.month === month);
+  if (!current) return null;
+
+  const past = trend.filter((t) => t.month < month && t.income > 0).slice(-3);
+  const incomeIsEstimate = current.income === 0 && past.length > 0;
+  const income = incomeIsEstimate
+    ? Math.round(past.reduce((sum, t) => sum + t.income, 0) / past.length)
+    : current.income;
+
+  if (income === 0) return null;
+
+  const available = income - current.fixedExpense - pendingFixed;
+  const left = available - current.variableExpense;
+
+  return {
+    income,
+    incomeIsEstimate,
+    fixed: current.fixedExpense + pendingFixed,
+    pendingFixed,
+    spent: current.variableExpense,
+    available,
+    left,
+    daysLeft,
+    perDay: daysLeft && daysLeft > 0 && left > 0 ? Math.floor(left / daysLeft) : null,
+  };
+}
+
+/**
+ * 每個月的結餘累加起來 —— 也就是「存款是在往上還是往下」。
+ *
+ * 單月結餘看不出趨勢：三月 −3,532 看起來還好，但連續六個月都 −3,000 就是另一回事了。
+ * Gino 的交接摘要裡有一句「存款約 20~30 萬，慢慢在減少中」，那個「慢慢」原本只是感覺，
+ * 這條線把它變成看得到的斜率。
+ *
+ * 暫付款不算進去：那是先墊出去、之後會回來的錢，算進來會讓押金那個月憑空掉兩萬。
+ */
+export type CumulativePoint = { month: string; net: number; total: number };
+
+export function deriveCumulative(trend: MonthTotals[]): CumulativePoint[] {
+  let total = 0;
+  return trend.map((t) => {
+    const net = t.income - t.variableExpense - t.fixedExpense;
+    total += net;
+    return { month: t.month, net, total };
+  });
+}
+
+export type FixedItem = { name: string; previous: number; current: number };
+
+/**
+ * 固定支出對帳：上個月有、這個月還沒記的。
+ *
+ * 房租、壇費每個月都要付，但正因為每個月都一樣，最容易忘記記
+ * （Gino 的 8 月交接摘要就寫著「月租 11,000 尚未入帳」）。
+ *
+ * 刻意不做成「自動每月幫你記一筆」：金額會變（壇費從 650 變成 700 過），
+ * 自動記會安靜地記錯，而記錯的固定支出比漏記更難發現。提醒讓人自己按，
+ * 才會順手看一眼金額對不對。
+ *
+ * 兩個月一次查完，不要分兩支 —— 首頁與月結算頁的查詢數都要斤斤計較。
+ */
+export async function getFixedCheck(month: string): Promise<FixedItem[]> {
+  const previous = shiftMonth(month, -1);
+  const start = `${previous}-01`;
+  const end = monthRange(month).end;
+
+  const monthExpr = sql<string>`to_char(${transactions.date}, 'YYYY-MM')`;
+  const rows = await read('固定支出對帳', () =>
+    db
+      .select({
+        month: monthExpr,
+        name: categories.name,
+        amount: sql<number>`sum(${transactions.amount})`.mapWith(Number),
+      })
+      .from(transactions)
+      .innerJoin(categories, eq(categories.id, transactions.categoryId))
+      .where(
+        and(
+          eq(transactions.kind, 'expense'),
+          eq(transactions.isFixed, true),
+          gte(transactions.date, start),
+          lt(transactions.date, end),
+        ),
+      )
+      .groupBy(monthExpr, categories.name),
+  );
+
+  const names = [...new Set(rows.map((r) => r.name))].sort();
+  return names.map((name) => ({
+    name,
+    previous: rows.find((r) => r.month === previous && r.name === name)?.amount ?? 0,
+    current: rows.find((r) => r.month === month && r.name === name)?.amount ?? 0,
+  }));
+}
+
 export type CategorySlice = {
   categoryId: string;
   name: string;

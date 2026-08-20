@@ -46,9 +46,15 @@ const NEW_INCOME = ['固定收入', '投資收入', '其他收入', '工作收�
  */
 const ADVANCE_CATEGORY = {
   新北課程訂金: '雜支',
-  露營費用: '娛樂',
   '押金（2個月）': '住宿',
 };
+
+/**
+ * Excel 裡記成暫付款、但後來證明就是花掉了的。
+ * 6/14 的露營費用 1,800 當時寫「待退回」，Gino 2026-08-21 確認那不是暫付款，
+ * 就是一般支出（7 月那筆 1,800 退款還在收入裡，兩邊相抵）。
+ */
+const NOT_ADVANCE = { 露營費用: '娛樂' };
 
 /** 房租、壇費是固定支出。7 月的「月租」記在明細裡，性質一樣 */
 const FIXED_ITEM = { 租金: '房租', 月租: '房租', 壇費: '壇費' };
@@ -229,7 +235,10 @@ function readDetail(workbook, file, month) {
     let categoryName = category;
     let kind = 'expense';
 
-    if (category === '暫付款') {
+    if (category === '暫付款' && NOT_ADVANCE[item]) {
+      categoryName = NOT_ADVANCE[item];
+      flag(`${month}月`, `「${item} ${amount}」Excel 記成暫付款，改成一般支出／${categoryName}`);
+    } else if (category === '暫付款') {
       kind = 'advance';
       categoryName = ADVANCE_CATEGORY[item] ?? '未分類';
       flag(`${month}月`, `暫付款「${item} ${amount}」改記成性質＝暫付款、分類＝${categoryName}`);
