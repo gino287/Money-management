@@ -6,13 +6,7 @@ import { CompareLine } from '@/components/CompareLine';
 import { CumulativeChart } from '@/components/CumulativeChart';
 import { FixedCheck } from '@/components/FixedCheck';
 import { TrendChart } from '@/components/TrendChart';
-import {
-  currentMonth,
-  formatAmount,
-  formatMonth,
-  formatMonthShort,
-  shiftMonth,
-} from '@/lib/format';
+import { currentMonth, formatAmount, formatMonth, shiftMonth } from '@/lib/format';
 import {
   deriveBudget,
   deriveCumulative,
@@ -163,9 +157,13 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
 
       <FixedCheck items={fixedCheck} />
 
-      {budget && (
+      {/*
+        * 只有本月才顯示。過去的月份「還可以花 −22,327」是句廢話 ——
+        * 那個月已經過完了，而且那個數字就是上面那格收支淨額，講兩次沒有比較清楚。
+        */}
+      {budget && isThisMonth && (
         <section>
-          <BudgetBlock budget={budget} label={isThisMonth ? '這個月' : formatMonthShort(month)} />
+          <BudgetBlock budget={budget} label="這個月" />
         </section>
       )}
 
