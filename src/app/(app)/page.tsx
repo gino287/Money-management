@@ -28,6 +28,7 @@ import {
   type MonthTotals,
   type Pulse,
 } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 
 import { parseSentence } from '../actions/parse';
 import { createTransaction } from '../actions/transactions';
@@ -70,12 +71,18 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
    * getDailyTotals 同理：它一支就餵飽了「今天花多少」「七天小圖」「連續記帳」
    * 「跟上個月同一天比」「月底預估」五個地方。要是每個各查一支，這頁就要排隊九次。
    */
-  const categories = await getCategories({ activeOnly: false });
-  const daily = await getDailyTotals();
-  const trend = await getMonthlyTotals(6);
-  const recent = await getTransactions({}, 4);
+  /*
+   * 這一支不算在上面說的「查詢數要斤斤計較」裡：currentUser 被 React cache
+   * 包著，同一次請求裡 layout 也問過一次，所以整頁只會真的查一次。
+   */
+  const user = await requireUser();
+
+  const categories = await getCategories(user.id, { activeOnly: false });
+  const daily = await getDailyTotals(user.id);
+  const trend = await getMonthlyTotals(user.id, 6);
+  const recent = await getTransactions(user.id, {}, 4);
   // 只提醒該追的：到期、過期、或沒寫預計時間的。理由見 queries.ts 的 isDue
-  const openSettlements = (await getSettlements('open')).filter((s) => isDue(s));
+  const openSettlements = (await getSettlements(user.id, 'open')).filter((s) => isDue(s));
 
   const pulse = derivePulse(daily);
 
@@ -107,7 +114,8 @@ export default async function HomePage({ searchParams }: PageProps<'/'>) {
       <header className="space-y-3.5 pt-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h1 className="text-[1.6rem] leading-tight font-medium">{greeting()}，Gino</h1>
+            {/* 名字從帳號來，不再寫死 —— 媽媽登入時要看到的是她的名字 */}
+            <h1 className="text-[1.6rem] leading-tight font-medium">{greeting()}，{user.name}</h1>
             <p className="mt-1.5 text-sm text-text-muted">{todayLine(pulse)}</p>
           </div>
           <p className="tabular shrink-0 pt-1.5 text-xs text-text-faint">

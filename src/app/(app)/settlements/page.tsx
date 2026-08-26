@@ -3,12 +3,15 @@ import { PageHeader } from '@/components/PageHeader';
 import { SettlementForm } from '@/components/SettlementForm';
 import { SettlementItem } from '@/components/SettlementItem';
 import { getCategories, getSettlements, isDue } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SettlementsPage() {
-  const all = await getSettlements();
-  const categories = await getCategories({ activeOnly: false });
+  const user = await requireUser();
+
+  const all = await getSettlements(user.id);
+  const categories = await getCategories(user.id, { activeOnly: false });
 
   const open = all.filter((s) => s.status === 'open');
   const settled = all.filter((s) => s.status === 'settled');

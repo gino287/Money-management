@@ -22,6 +22,11 @@ config({ path: '.env.local' });
 
 const BASE = 'http://localhost:3000';
 const MARK = '[E2E]';
+/**
+ * 驗收打的是 Gino 自己那本帳。多人改造時第一個帳號就是用 APP_PASSWORD 開的，
+ * 所以密碼沿用同一組，只是現在還要多打一個名字（見 src/db/migrate-multiuser.ts）。
+ */
+const OWNER_NAME = process.env.OWNER_NAME?.trim() || 'Gino';
 
 const sql = postgres(process.env.DATABASE_URL, {
   prepare: false,
@@ -134,11 +139,20 @@ try {
   await page.goto(`${BASE}/transactions`, { waitUntil: 'domcontentloaded' });
   check('未登入會被導到登入頁，且記住原本要去的頁面', page.url().includes('next=%2Ftransactions'));
 
+  await page.getByPlaceholder('名字').fill(OWNER_NAME);
   await page.getByPlaceholder('密碼').fill('definitely-wrong');
   await page.getByRole('button', { name: '進入' }).click();
-  await wait(page, 'text=密碼不對');
+  await wait(page, 'text=名字或密碼不對');
   check('密碼錯誤不放行', true);
 
+  // 名字不存在時的訊息要跟密碼錯一模一樣，否則等於幫人確認哪些名字存在
+  await page.getByPlaceholder('名字').fill('根本沒有這個人');
+  await page.getByPlaceholder('密碼').fill('whatever');
+  await page.getByRole('button', { name: '進入' }).click();
+  await wait(page, 'text=名字或密碼不對');
+  check('名字不存在時不會透露「查無此人」', true);
+
+  await page.getByPlaceholder('名字').fill(OWNER_NAME);
   await page.getByPlaceholder('密碼').fill(process.env.APP_PASSWORD);
   await page.getByRole('button', { name: '進入' }).click();
   await page.getByRole('link', { name: '明細' }).waitFor({ timeout: 25000 });
@@ -694,9 +708,16 @@ try {
         select count(*)::int as n from transactions
         where source = 'line'
           and raw_input_id in (select id from raw_inputs where text like ${MARK + '%'})`;
+      /*
+       * 沒綁定的人**會**收到回覆，但那則回覆只是把他自己的 LINE 代號告訴他，
+       * 好讓他拿去請人開通（見 api/line/route.ts）。真正要驗的是「一筆帳都沒記」。
+       */
       check(
-        '別人傳訊息不會被記帳',
-        stranger.status === 200 && stranger.reply === null && strangerRows[0].n === 0,
+        '沒綁定的人不會被記帳，只會被告知怎麼開通',
+        stranger.status === 200 &&
+          stranger.reply?.includes('還沒有開通') === true &&
+          stranger.reply.includes('Usomeone-else') &&
+          strangerRows[0].n === 0,
       );
 
       const recorded = await say(`${MARK} 今天午餐花了 55`);
@@ -762,6 +783,7 @@ try {
   const phone = await browser.newContext({ ...devices['iPhone 13'], baseURL: BASE });
   const p2 = await phone.newPage();
   await p2.goto(`${BASE}/login`, { waitUntil: 'domcontentloaded' });
+  await p2.getByPlaceholder('名字').fill(OWNER_NAME);
   await p2.getByPlaceholder('密碼').fill(process.env.APP_PASSWORD);
   await p2.getByRole('button', { name: '進入' }).click();
   await homeReady(p2, 25000);

@@ -42,11 +42,60 @@ export const SETTLEMENT_DIRECTIONS = ['receivable', 'payable'] as const;
 export type SettlementDirection = (typeof SETTLEMENT_DIRECTIONS)[number];
 
 /**
+ * 使用者。一個人一本完全獨立的帳：分類、交易、待結清、原始語句都掛在自己名下，
+ * 彼此看不到對方的任何東西（2026-08-26 Gino 確認：媽媽要各記各的，不是共用一本）。
+ *
+ * 沒有註冊頁面，也沒有「邀請」流程 —— 這是家裡兩三個人在用的東西，
+ * 開帳號走 `npm run user:add`，由握有資料庫連線的人手動開。
+ * 公開的註冊入口對這個規模只有壞處：多一個誰都打得到的寫入端點。
+ */
+export const users = pgTable(
+  'users',
+  {
+    id: id(),
+    /**
+     * 登入時要輸入的名字，同時也是畫面上顯示的稱呼。
+     *
+     * 存的時候原樣保留（顯示要好看），登入比對時兩邊都轉小寫並去掉前後空白 ——
+     * 手機鍵盤很愛自動把第一個字母變大寫，為了這個讓人登不進去太冤。
+     * 唯一鍵是一般的 unique（區分大小寫），開帳號的工具會自己擋掉
+     * 只有大小寫不同的名字，免得出現兩個都能用同一組字登入的帳號。
+     */
+    name: text('name').notNull(),
+    /** PBKDF2 雜湊，格式見 src/lib/auth.ts。絕不存明文 */
+    passwordHash: text('password_hash').notNull(),
+    /**
+     * 這個人的 LINE userId，綁了才能用 LINE 記帳、也才收得到每日提醒。
+     * 沒綁就是 null —— LINE 是加值功能，不綁一樣可以用網頁記帳。
+     */
+    lineUserId: text('line_user_id').unique(),
+    /** 停用而非刪除，理由跟分類一樣：帳還在，人只是不再登入 */
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+  },
+  (t) => [unique('users_name_unique').on(t.name)],
+);
+
+/**
+ * 「這是誰的」。四張資料表都要有，而且都是 notNull ——
+ * 可以為 null 的話，少寫一次 where 就會讓資料變成無主的，
+ * 而無主的資料在多人系統裡等於「所有人都看得到」。
+ *
+ * onDelete 用 restrict 不是 cascade：刪掉一個人就等於刪掉他好幾個月的帳，
+ * 那種事不該因為一句 `delete from users` 就安靜地發生。要停用請用 isActive。
+ */
+const userId = () =>
+  uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'restrict' });
+
+/**
  * 原始語句。不管最後有沒有寫進正式紀錄都留著，
  * 之後用來回頭檢查 AI 判斷邏輯、微調 prompt（規格書 3）。
  */
 export const rawInputs = pgTable('raw_inputs', {
   id: id(),
+  userId: userId(),
   text: text('text').notNull(),
   source: text('source').notNull(),
   parsed: jsonb('parsed'),
@@ -64,6 +113,7 @@ export const categories = pgTable(
   'categories',
   {
     id: id(),
+    userId: userId(),
     name: text('name').notNull(),
     kind: text('kind').$type<CategoryKind>().notNull(),
     /** 固定支出（房租、壇費）預設值，月結算固定／變動分開算 */
@@ -72,13 +122,15 @@ export const categories = pgTable(
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
   },
-  (t) => [unique('categories_name_kind_unique').on(t.name, t.kind)],
+  // 同名分類只是「不能在同一個人底下重複」。媽媽跟 Gino 各有一個「餐食」是正常的
+  (t) => [unique('categories_user_name_kind_unique').on(t.userId, t.name, t.kind)],
 );
 
 export const transactions = pgTable(
   'transactions',
   {
     id: id(),
+    userId: userId(),
     date: date('date').notNull(),
     amount: amount('amount').notNull(),
     categoryId: uuid('category_id')
@@ -105,10 +157,14 @@ export const transactions = pgTable(
     createdAt: createdAt(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
+  /*
+   * 索引一律以 user_id 開頭。多人之後每一支查詢都必然帶著「這是誰的」，
+   * 只建在 date 上的索引會先掃遍所有人的帳再篩人，白做一大半工。
+   */
   (t) => [
-    index('transactions_date_idx').on(t.date.desc()),
-    index('transactions_category_idx').on(t.categoryId),
-    index('transactions_kind_idx').on(t.kind),
+    index('transactions_user_date_idx').on(t.userId, t.date.desc()),
+    index('transactions_user_category_idx').on(t.userId, t.categoryId),
+    index('transactions_user_kind_idx').on(t.userId, t.kind),
   ],
 );
 
@@ -121,6 +177,7 @@ export const settlements = pgTable(
   'settlements',
   {
     id: id(),
+    userId: userId(),
     title: text('title').notNull(),
     expectedAmount: amount('expected_amount'),
     direction: text('direction').$type<SettlementDirection>().notNull(),
@@ -146,7 +203,7 @@ export const settlements = pgTable(
     openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
     settledAt: timestamp('settled_at', { withTimezone: true }),
   },
-  (t) => [index('settlements_status_idx').on(t.status)],
+  (t) => [index('settlements_user_status_idx').on(t.userId, t.status)],
 );
 
 /**
@@ -168,6 +225,7 @@ export const transactionRevisions = pgTable(
   (t) => [index('transaction_revisions_tx_idx').on(t.transactionId)],
 );
 
+export type User = typeof users.$inferSelect;
 export type Category = typeof categories.$inferSelect;
 export type Transaction = typeof transactions.$inferSelect;
 export type Settlement = typeof settlements.$inferSelect;

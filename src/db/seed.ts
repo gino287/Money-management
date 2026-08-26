@@ -2,54 +2,48 @@ import { config } from 'dotenv';
 
 config({ path: '.env.local' });
 
+import { asc, sql } from 'drizzle-orm';
+
+import { defaultCategoryRows } from './default-categories';
 import { db } from './index';
-import { categories, type CategoryKind } from './schema';
+import { categories, users } from './schema';
 
 /**
- * 規格書 2.1 的既有分類 + 2026-08-10 確認的收入來源。
- * 這只是起點，之後 Gino 在 /categories 頁面自己增減。
+ * 幫某一個人補上預設分類。
+ *
+ *   npm run db:seed              ← 補給第一個帳號（也就是 Gino）
+ *   npm run db:seed -- 媽媽       ← 補給指定的人
+ *
+ * 開新帳號時 `npm run user:add` 已經會自動帶一份，這支是給
+ * 「不小心刪掉了想補回來」或「改造前就存在的帳號」用的。
+ * 重跑不會覆蓋已經改過的分類，也不會重複新增。
  */
-const SEED: { name: string; kind: CategoryKind; isFixed?: boolean }[] = [
-  // 變動支出
-  { name: '餐食', kind: 'expense' },
-  { name: '雜支', kind: 'expense' },
-  { name: '交通', kind: 'expense' },
-  { name: '食材採買', kind: 'expense' },
-  { name: '道場', kind: 'expense' },
-  { name: '醫療', kind: 'expense' },
-  { name: '健身', kind: 'expense' },
-  // 固定支出
-  { name: '房租', kind: 'expense', isFixed: true },
-  { name: '壇費', kind: 'expense', isFixed: true },
-  // AI 對不上分類時的落點，不要刪
-  { name: '未分類', kind: 'expense' },
-  // 收入
-  { name: '工讀薪水', kind: 'income' },
-  { name: '家人給的', kind: 'income' },
-  { name: '朋友還錢／代墊收回', kind: 'income' },
-  { name: '實驗室計畫', kind: 'income' },
-  { name: '未分類', kind: 'income' },
-];
-
 async function main() {
-  const rows = SEED.map((c, i) => ({
-    name: c.name,
-    kind: c.kind,
-    isFixed: c.isFixed ?? false,
-    sortOrder: i,
-  }));
+  const wanted = process.argv[2]?.trim();
 
-  // 重跑不會覆蓋 Gino 改過的分類，也不會重複新增
+  const [user] = wanted
+    ? await db
+        .select()
+        .from(users)
+        .where(sql`lower(${users.name}) = ${wanted.toLowerCase()}`)
+        .limit(1)
+    : await db.select().from(users).orderBy(asc(users.createdAt)).limit(1);
+
+  if (!user) {
+    console.error(wanted ? `找不到叫「${wanted}」的人` : '還沒有任何帳號，先跑 npm run user:add');
+    process.exit(1);
+  }
+
   const inserted = await db
     .insert(categories)
-    .values(rows)
-    .onConflictDoNothing({ target: [categories.name, categories.kind] })
+    .values(defaultCategoryRows(user.id))
+    .onConflictDoNothing({ target: [categories.userId, categories.name, categories.kind] })
     .returning({ name: categories.name, kind: categories.kind });
 
   if (inserted.length === 0) {
-    console.log('分類都已存在，沒有新增任何資料。');
+    console.log(`${user.name} 的分類都已存在，沒有新增任何資料。`);
   } else {
-    console.log(`新增了 ${inserted.length} 個分類：`);
+    console.log(`幫 ${user.name} 新增了 ${inserted.length} 個分類：`);
     for (const c of inserted) console.log(`  ${c.kind === 'income' ? '收入' : '支出'} / ${c.name}`);
   }
 

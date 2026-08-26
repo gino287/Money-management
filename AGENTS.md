@@ -25,6 +25,15 @@ Gino 的個人記帳系統。開工前先讀 `docs/規格書.md`（不能變的�
 - **待結清項目沒結清就要一直看得到**，這是過去漏記過的痛點
 - **分類不可寫死 enum**，停用走 `isActive: false`，永遠不要刪
 
+多人（規格書 2.3，2026-08-26 起）：
+
+- **每一支查詢都要帶 `userId`**，而且是必填的第一個參數。少傳會編不過，這是刻意的
+- **修改與刪除一律加上歸屬條件**（`and(eq(x.id, id), eq(x.userId, user.id))`），
+  讀的時候檢查過了也還是要寫
+- 網頁端身分用 `requireUser()`（`src/lib/session.ts`）；LINE 與 cron 沒有 cookie，
+  靠 `users.line_user_id` 反查
+- `src/lib/auth.ts` **不可以 import 資料庫** —— proxy 會用到它，那支跑在 edge
+
 ## 慣例
 
 - 日期一律 `YYYY-MM-DD` 字串，經 `src/lib/format.ts` 處理。伺服器跑 UTC，「今天」永遠指台北時間

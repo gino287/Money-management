@@ -3,13 +3,16 @@ import { CategoryForm } from '@/components/CategoryForm';
 import { CategoryName } from '@/components/CategoryName';
 import { PageHeader } from '@/components/PageHeader';
 import { getCategories, getCategoryUsage } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 export default async function CategoriesPage() {
+  const user = await requireUser();
+
   // 排隊查，不要一次開好幾條新連線（見首頁那段註解）
-  const categories = await getCategories({ activeOnly: false });
-  const usage = await getCategoryUsage();
+  const categories = await getCategories(user.id, { activeOnly: false });
+  const usage = await getCategoryUsage(user.id);
 
   const groups = [
     { kind: 'expense' as const, label: '支出' },
@@ -81,12 +84,17 @@ export default async function CategoriesPage() {
         </section>
       ))}
 
+      {/*
+        多人之後這裡要寫出「現在是誰」。每個人的分類長得都不一樣，
+        一打開看到一整排不認得的分類時，第一個該回答的問題就是
+        「我是不是登錯人了」—— 讓答案就在同一個畫面上。
+      */}
       <form method="post" action="/api/logout" className="border-t border-border pt-5">
         <button
           type="submit"
           className="w-full py-2 text-center text-xs text-text-faint transition-colors hover:text-text-muted"
         >
-          登出
+          以 {user.name} 的身分登入中 · 登出
         </button>
       </form>
     </div>

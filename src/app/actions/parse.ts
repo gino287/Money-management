@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { rawInputs } from '@/db/schema';
 import type { TransactionFormValues } from '@/components/TransactionForm';
 import { interpret } from '@/lib/interpret';
+import { requireUser } from '@/lib/session';
 
 import type { ActionState } from './transactions';
 
@@ -32,12 +33,14 @@ export async function parseSentence(_prev: ParseState, formData: FormData): Prom
   if (!sentence) return { error: '先打一句話吧' };
   if (sentence.length > MAX_SENTENCE) return { error: `一次講短一點，${MAX_SENTENCE} 字以內` };
 
-  const { values, parsed, model, failure } = await interpret(sentence);
+  const user = await requireUser();
+
+  const { values, parsed, model, failure } = await interpret(user.id, sentence);
 
   // 不管成功失敗、採用與否，原句都要留著（規格書 3）——之後才有東西可以檢討 prompt
   const [saved] = await db
     .insert(rawInputs)
-    .values({ text: sentence, source: 'web_agent', parsed, model, accepted: false })
+    .values({ userId: user.id, text: sentence, source: 'web_agent', parsed, model, accepted: false })
     .returning({ id: rawInputs.id });
 
   if (failure) return { error: `${failure}，先用下面的表單記`, sentence, rawInputId: saved?.id };

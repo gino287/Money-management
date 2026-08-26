@@ -19,6 +19,7 @@ import {
   getTransactions,
   summarize,
 } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,12 +28,14 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
   const raw = Array.isArray(params.month) ? params.month[0] : params.month;
   const month = /^\d{4}-\d{2}$/.test(raw ?? '') ? raw! : currentMonth();
 
+  const user = await requireUser();
+
   // 一支一支查，理由見首頁那段註解
-  const rows = await getTransactions({ month });
-  const trend = await getMonthlyTotals(6);
-  const slices = await getCategoryBreakdown(month);
-  const open = await getSettlements('open');
-  const fixedCheck = await getFixedCheck(month);
+  const rows = await getTransactions(user.id, { month });
+  const trend = await getMonthlyTotals(user.id, 6);
+  const slices = await getCategoryBreakdown(user.id, month);
+  const open = await getSettlements(user.id, 'open');
+  const fixedCheck = await getFixedCheck(user.id, month);
 
   const summary = summarize(rows);
   const totalExpense = summary.variableExpense + summary.fixedExpense;
@@ -48,7 +51,7 @@ export default async function SummaryPage({ searchParams }: PageProps<'/summary'
    */
   const previous = shiftMonth(month, -1);
   const previousTotals = trend.find((t) => t.month === previous);
-  const pulse = isThisMonth ? derivePulse(await getDailyTotals()) : null;
+  const pulse = isThisMonth ? derivePulse(await getDailyTotals(user.id)) : null;
 
   /*
    * 「還可以花多少」與「累積下來」都是從已經查好的 trend 算的，不另外查資料庫。

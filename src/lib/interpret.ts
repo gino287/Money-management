@@ -123,9 +123,14 @@ function pickFallback(
   return sameKind.find((c) => c.name === '未分類') ?? sameKind[0];
 }
 
-export async function interpret(sentence: string): Promise<Interpretation> {
+/**
+ * userId 是必要的，不是為了記在哪裡（這支不碰資料庫），而是因為
+ * **每個人的分類清單不一樣** —— 拿 Gino 的分類去解讀媽媽講的話，
+ * 挑出來的分類編號寫進她的帳裡就是一筆指向別人分類的爛資料。
+ */
+export async function interpret(userId: string, sentence: string): Promise<Interpretation> {
   const today = todayISO();
-  const choices = categoryChoices(await getCategories({ activeOnly: true }));
+  const choices = categoryChoices(await getCategories(userId, { activeOnly: true }));
 
   let content: string | undefined;
   let model: string | null = null;

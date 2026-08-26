@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, getTableColumns, gte, ilike, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gte, ilike, isNotNull, lt, sql } from 'drizzle-orm';
 import { unstable_cache } from 'next/cache';
 import { cache } from 'react';
 
@@ -7,15 +7,37 @@ import {
   categories,
   settlements,
   transactions,
+  users,
   type CategoryKind,
   type Settlement,
   type TransactionKind,
+  type User,
 } from '@/db/schema';
 
 import { currentMonth, daysAgoISO, monthRange, shiftMonth } from './format';
 
+/**
+ * 每一支查詢的第一個參數都是 userId，而且是必填的。
+ *
+ * 這是整個多人改造裡唯一真正重要的設計決定。另一個做法是讓查詢自己去讀
+ * cookie、自己算出「現在是誰」，呼叫端什麼都不用改 —— 那樣改動小得多，
+ * 但是**漏掉一支就是把別人的帳給錯的人看**，而且不會有任何錯誤訊息，
+ * 只會安靜地多出幾筆不是你的資料。
+ *
+ * 改成必填參數之後，少傳一支 TypeScript 就編不過。改動大，但漏不掉。
+ * cron 與 LINE webhook 沒有 cookie 可讀，這個做法它們也用得上。
+ */
+
 /** 分類快取的失效標籤。寫入端（actions/categories.ts）要用同一個字串 */
 export const CATEGORIES_TAG = 'categories';
+
+/**
+ * 分類快取是分人的。
+ *
+ * 媽媽改一個分類不該把 Gino 的快取一起沖掉 —— 他下一次開首頁就要多等
+ * 一支查詢，而那支正好是全系統被打最兇、也最容易逾時的那一支。
+ */
+export const categoriesTag = (userId: string) => `${CATEGORIES_TAG}:${userId}`;
 
 export type TransactionRow = {
   id: string;
@@ -151,24 +173,27 @@ const transactionSelect = {
  * 打開 cacheComponents，那會改變整個 app 的渲染語意（靜態外殼 + 串流），
  * 不是為了快取一份分類清單就該動的東西。等真的要整體改造時再一起換。
  */
-const loadCategories = unstable_cache(
-  async () =>
-    read('分類清單', () =>
-      db
-        .select()
-        .from(categories)
-        .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name)),
-    ),
-  ['categories'],
-  { tags: [CATEGORIES_TAG] },
-);
+const loadCategories = (userId: string) =>
+  unstable_cache(
+    async () =>
+      read('分類清單', () =>
+        db
+          .select()
+          .from(categories)
+          .where(eq(categories.userId, userId))
+          .orderBy(asc(categories.kind), asc(categories.sortOrder), asc(categories.name)),
+      ),
+    // userId 進 key，兩個人的清單才不會共用同一格快取
+    ['categories', userId],
+    { tags: [categoriesTag(userId)] },
+  )();
 
 /**
  * 外層再包一層 React cache：同一次請求裡 layout 跟 page 都要用時只會走一次。
  * activeOnly 在 JS 這邊過濾，這樣兩種呼叫方式共用同一份快取。
  */
-export const getCategories = cache(async (opts: { activeOnly?: boolean } = {}) => {
-  const all = await loadCategories();
+export const getCategories = cache(async (userId: string, opts: { activeOnly?: boolean } = {}) => {
+  const all = await loadCategories(userId);
   return opts.activeOnly ? all.filter((c) => c.isActive) : all;
 });
 
@@ -181,10 +206,11 @@ export type TransactionFilters = {
 };
 
 export async function getTransactions(
+  userId: string,
   filters: TransactionFilters = {},
   limit?: number,
 ): Promise<TransactionRow[]> {
-  const conditions = [];
+  const conditions = [eq(transactions.userId, userId)];
 
   if (filters.month) {
     const { start, end } = monthRange(filters.month);
@@ -199,20 +225,24 @@ export async function getTransactions(
     .select(transactionSelect)
     .from(transactions)
     .innerJoin(categories, eq(transactions.categoryId, categories.id))
-    .where(conditions.length ? and(...conditions) : undefined)
+    .where(and(...conditions))
     // 同一天記的多筆按建立時間排，補記時順序才符合直覺
     .orderBy(desc(transactions.date), desc(transactions.createdAt));
 
   return read('交易明細', () => (limit ? query.limit(limit) : query));
 }
 
-export async function getTransaction(id: string): Promise<TransactionRow | undefined> {
+/** 查不到跟「不是你的」回一樣的東西 —— 別人有沒有這筆帳不關你的事 */
+export async function getTransaction(
+  userId: string,
+  id: string,
+): Promise<TransactionRow | undefined> {
   const [row] = await read('單筆交易', () =>
     db
       .select(transactionSelect)
       .from(transactions)
       .innerJoin(categories, eq(transactions.categoryId, categories.id))
-      .where(eq(transactions.id, id))
+      .where(and(eq(transactions.id, id), eq(transactions.userId, userId)))
       .limit(1),
   );
   return row;
@@ -283,7 +313,7 @@ export function summarizeTotals(totals: MonthTotals): MonthSummary {
 }
 
 /** 給分類管理頁顯示「這個分類用過幾次」，判斷能不能安心停用 */
-export async function getCategoryUsage(): Promise<Map<string, number>> {
+export async function getCategoryUsage(userId: string): Promise<Map<string, number>> {
   const rows = await read('分類使用次數', () =>
     db
       .select({
@@ -291,6 +321,7 @@ export async function getCategoryUsage(): Promise<Map<string, number>> {
         count: sql<number>`count(*)`.mapWith(Number),
       })
       .from(transactions)
+      .where(eq(transactions.userId, userId))
       .groupBy(transactions.categoryId),
   );
 
@@ -310,7 +341,7 @@ export type SettlementRow = Settlement & {
  * 待結清頁看到的「已收 1,000／共 1,000」永遠跟明細對得起來，
  * 不會出現「這裡寫收回了，明細裡卻沒有那筆錢」。
  */
-export const getSettlements = cache(async (status?: 'open' | 'settled') => {
+export const getSettlements = cache(async (userId: string, status?: 'open' | 'settled') => {
   const rows = await read('待結清清單', () =>
     db
       .select({
@@ -318,8 +349,22 @@ export const getSettlements = cache(async (status?: 'open' | 'settled') => {
         received: sql<number>`coalesce(sum(${transactions.amount}), 0)`.mapWith(Number),
       })
       .from(settlements)
-      .leftJoin(transactions, eq(transactions.settlementId, settlements.id))
-      .where(status ? eq(settlements.status, status) : undefined)
+      /*
+       * 收回的那幾筆交易也要限定同一個人。
+       *
+       * 光靠 settlement_id 對得起來看似就夠了 —— 但那等於相信「別人的交易
+       * 絕對不會指到我的待結清項目」。把條件寫進 join 條件裡，這件事就從
+       * 「相信」變成「不可能」，代價只是多一個 and。
+       */
+      .leftJoin(
+        transactions,
+        and(eq(transactions.settlementId, settlements.id), eq(transactions.userId, userId)),
+      )
+      .where(
+        status
+          ? and(eq(settlements.userId, userId), eq(settlements.status, status))
+          : eq(settlements.userId, userId),
+      )
       .groupBy(settlements.id)
       .orderBy(asc(settlements.status), desc(settlements.openedAt)),
   );
@@ -344,8 +389,8 @@ export function isDue(item: Pick<Settlement, 'dueMonth'>, month = currentMonth()
  * 所以直接從快取好的清單裡找，不要再往資料庫跑一趟。
  * 清單是完整的（沒有濾掉停用的），所以「找不到就是真的不存在」仍然成立。
  */
-export async function getCategory(id: string) {
-  return (await loadCategories()).find((c) => c.id === id);
+export async function getCategory(userId: string, id: string) {
+  return (await loadCategories(userId)).find((c) => c.id === id);
 }
 
 export function categoryKindFor(kind: TransactionKind): CategoryKind {
@@ -360,7 +405,10 @@ export function categoryKindFor(kind: TransactionKind): CategoryKind {
  * 「改我剛剛在 LINE 講的那筆」，不會是改網頁上手動記的東西。
  * 超過這個時間就不給改，避免隔了一天回一句「刪掉」把舊帳刪掉。
  */
-export async function getLastLineTransaction(withinHours = 12): Promise<TransactionRow | undefined> {
+export async function getLastLineTransaction(
+  userId: string,
+  withinHours = 12,
+): Promise<TransactionRow | undefined> {
   const [row] = await read('LINE 最後一筆', () =>
     db
       .select(transactionSelect)
@@ -368,6 +416,7 @@ export async function getLastLineTransaction(withinHours = 12): Promise<Transact
       .innerJoin(categories, eq(transactions.categoryId, categories.id))
       .where(
         and(
+          eq(transactions.userId, userId),
           eq(transactions.source, 'line'),
           gte(transactions.createdAt, new Date(Date.now() - withinHours * 3_600_000)),
         ),
@@ -379,12 +428,12 @@ export async function getLastLineTransaction(withinHours = 12): Promise<Transact
 }
 
 /** 某一天記了幾筆，每日提醒用來判斷「今天到底記了沒」 */
-export async function countTransactionsOn(date: string): Promise<number> {
+export async function countTransactionsOn(userId: string, date: string): Promise<number> {
   const [row] = await read('當日筆數', () =>
     db
       .select({ count: sql<number>`count(*)`.mapWith(Number) })
       .from(transactions)
-      .where(eq(transactions.date, date)),
+      .where(and(eq(transactions.userId, userId), eq(transactions.date, date))),
   );
   return row?.count ?? 0;
 }
@@ -409,7 +458,7 @@ export type MonthTotals = {
  *
  * 沒有帳的月份也要出現在結果裡，否則圖上會少一根柱子、看起來像資料掉了。
  */
-export async function getMonthlyTotals(months = 6): Promise<MonthTotals[]> {
+export async function getMonthlyTotals(userId: string, months = 6): Promise<MonthTotals[]> {
   const wanted: string[] = [];
   for (let i = months - 1; i >= 0; i--) wanted.push(shiftMonth(currentMonth(), -i));
   const start = `${wanted[0]}-01`;
@@ -440,7 +489,7 @@ export async function getMonthlyTotals(months = 6): Promise<MonthTotals[]> {
         count: sql<number>`count(*)`.mapWith(Number),
       })
       .from(transactions)
-      .where(gte(transactions.date, start))
+      .where(and(eq(transactions.userId, userId), gte(transactions.date, start)))
       .groupBy(monthExpr),
   );
 
@@ -563,7 +612,7 @@ export type FixedItem = { name: string; previous: number; current: number };
  *
  * 兩個月一次查完，不要分兩支 —— 首頁與月結算頁的查詢數都要斤斤計較。
  */
-export async function getFixedCheck(month: string): Promise<FixedItem[]> {
+export async function getFixedCheck(userId: string, month: string): Promise<FixedItem[]> {
   const previous = shiftMonth(month, -1);
   const start = `${previous}-01`;
   const end = monthRange(month).end;
@@ -580,6 +629,7 @@ export async function getFixedCheck(month: string): Promise<FixedItem[]> {
       .innerJoin(categories, eq(categories.id, transactions.categoryId))
       .where(
         and(
+          eq(transactions.userId, userId),
           eq(transactions.kind, 'expense'),
           eq(transactions.isFixed, true),
           gte(transactions.date, start),
@@ -611,7 +661,7 @@ export type CategorySlice = {
  * 只算支出：暫付款是先墊出去、之後會回來的錢，混進「這個月花在哪」會誤導
  * （規格書 2.2）。開伙是 0 元，自然不會出現在圖上，次數另外顯示。
  */
-export async function getCategoryBreakdown(month: string): Promise<CategorySlice[]> {
+export async function getCategoryBreakdown(userId: string, month: string): Promise<CategorySlice[]> {
   const { start, end } = monthRange(month);
 
   return read('分類佔比', () =>
@@ -627,6 +677,7 @@ export async function getCategoryBreakdown(month: string): Promise<CategorySlice
       .innerJoin(categories, eq(transactions.categoryId, categories.id))
       .where(
         and(
+          eq(transactions.userId, userId),
           eq(transactions.kind, 'expense'),
           gte(transactions.date, start),
           lt(transactions.date, end),
@@ -667,7 +718,7 @@ export const PULSE_DAYS = 75;
  * 沒有帳的日子也要出現在結果裡，否則圖上會少一根柱子、看起來像資料掉了，
  * 而且連續天數會把「那天沒記」誤算成連著的。
  */
-export async function getDailyTotals(days = PULSE_DAYS): Promise<DayTotals[]> {
+export async function getDailyTotals(userId: string, days = PULSE_DAYS): Promise<DayTotals[]> {
   const wanted: string[] = [];
   for (let i = days - 1; i >= 0; i--) wanted.push(daysAgoISO(i));
 
@@ -690,7 +741,7 @@ export async function getDailyTotals(days = PULSE_DAYS): Promise<DayTotals[]> {
         ),
       })
       .from(transactions)
-      .where(gte(transactions.date, wanted[0]))
+      .where(and(eq(transactions.userId, userId), gte(transactions.date, wanted[0])))
       .groupBy(dayExpr),
   );
 
@@ -773,4 +824,57 @@ export function derivePulse(daily: DayTotals[]): Pulse {
     daysInMonth,
     projection,
   };
+}
+
+/* ------------------------------------------------------------ 使用者 */
+
+/**
+ * LINE 上這個人是我們的誰。
+ *
+ * 一支 LINE 官方帳號就能服務全家人 —— 每一則 webhook 本來就帶著發話者的
+ * userId，查得到就用那個人的身分記帳，查不到就當作沒看到。
+ * 不需要一個人開一支 bot（2026-08-26 Gino 問過的問題）。
+ *
+ * 停用的人查不出來：停用之後 LINE 也應該一起失效，否則等於留了一道後門。
+ */
+export async function getUserByLineId(lineUserId: string): Promise<User | undefined> {
+  const [user] = await read('LINE 使用者', () =>
+    db
+      .select()
+      .from(users)
+      .where(and(eq(users.lineUserId, lineUserId), eq(users.isActive, true)))
+      .limit(1),
+  );
+  return user;
+}
+
+/**
+ * 憑證上的那個人是誰。每一頁都會問一次（見 src/lib/session.ts）。
+ *
+ * 一定要走 read()：這是全站唯一每個請求都跑的查詢，它要是卡住，
+ * 卡住的就是每一頁。read() 的三秒逾時與連線池重建正是為了這種情況存在的
+ * （理由見這支檔案開頭 read 的長註解）。
+ *
+ * 停用的人查不出來 —— 憑證有九十天效期，停用之後不該還能靠舊憑證繼續用。
+ */
+export async function getUserById(id: string): Promise<User | undefined> {
+  const [user] = await read('目前使用者', () =>
+    db
+      .select()
+      .from(users)
+      .where(and(eq(users.id, id), eq(users.isActive, true)))
+      .limit(1),
+  );
+  return user;
+}
+
+/** 每日提醒用：所有綁了 LINE、而且還在用的人 */
+export async function getLineUsers(): Promise<User[]> {
+  return read('要提醒的人', () =>
+    db
+      .select()
+      .from(users)
+      .where(and(eq(users.isActive, true), isNotNull(users.lineUserId)))
+      .orderBy(asc(users.createdAt)),
+  );
 }

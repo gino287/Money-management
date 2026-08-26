@@ -12,7 +12,9 @@
     "import": "node scripts/匯入.mjs",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx src/db/seed.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "db:multiuser": "tsx src/db/migrate-multiuser.ts",
+    "user": "tsx src/db/users.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

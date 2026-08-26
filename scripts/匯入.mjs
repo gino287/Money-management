@@ -4,6 +4,7 @@
  * 跑法：
  *   npm run import            ← 只印出「會做什麼」，不碰資料庫
  *   npm run import -- --write ← 真的寫進去
+ *   npm run import -- --write --user 媽媽   ← 匯進別人的帳本（預設是第一個帳號）
  *
  * 預設是預演，因為這支要寫三百多筆進 Gino 真正的帳本。
  * 寫進去的每一筆 source 都是 'import'，所以要反悔的話：
@@ -359,7 +360,29 @@ async function main() {
   });
 
   try {
-    const existing = await sql`select name, kind, id from categories`;
+    /*
+     * 多人之後每一筆帳都要有主人。這支是把 Gino 的舊 Excel 搬進來的，
+     * 所以預設就是第一個帳號；真的要匯進別人的帳本才加 --user。
+     */
+    const wantedUser = (() => {
+      const at = process.argv.indexOf('--user');
+      return at === -1 ? null : process.argv[at + 1];
+    })();
+
+    const [owner] = wantedUser
+      ? await sql`select id, name from users where lower(name) = ${wantedUser.toLowerCase()}`
+      : await sql`select id, name from users order by created_at limit 1`;
+
+    if (!owner) {
+      throw new Error(
+        wantedUser
+          ? `找不到叫「${wantedUser}」的人`
+          : '還沒有任何帳號。先跑 npm run db:multiuser -- --write',
+      );
+    }
+    const userId = owner.id;
+
+    const existing = await sql`select name, kind, id from categories where user_id = ${userId}`;
     const byName = new Map(existing.map((c) => [`${c.kind}:${c.name}`, c.id]));
 
     const wanted = (kind) => [
@@ -387,12 +410,12 @@ async function main() {
     const already = await sql`
       select date::text as date, amount::float8 as amount, category_id, kind, coalesce(note, '') as note
       from transactions
-      where date between ${iso(3, 1)} and ${CUTOFF}`;
+      where user_id = ${userId} and date between ${iso(3, 1)} and ${CUTOFF}`;
     const seen = new Set(
       already.map((r) => [r.date, r.amount, r.category_id, r.kind, r.note].join('|')),
     );
 
-    console.log(`讀了 ${files.length} 個檔案，${kept.length} 筆可以匯入\n`);
+    console.log(`讀了 ${files.length} 個檔案，${kept.length} 筆可以匯入 → ${owner.name} 的帳本\n`);
 
     console.log('【要新增的分類】');
     if (missing.length === 0) console.log('  沒有，現有分類就夠了');
@@ -443,9 +466,9 @@ async function main() {
     await sql.begin(async (tx) => {
       for (const m of missing) {
         const [row] = await tx`
-          insert into categories (name, kind, is_fixed, sort_order, is_active)
-          values (${m.name}, ${m.kind}, false, 100, true)
-          on conflict (name, kind) do update set name = excluded.name
+          insert into categories (user_id, name, kind, is_fixed, sort_order, is_active)
+          values (${userId}, ${m.name}, ${m.kind}, false, 100, true)
+          on conflict (user_id, name, kind) do update set name = excluded.name
           returning id`;
         byName.set(`${m.kind}:${m.name}`, row.id);
       }
@@ -464,19 +487,21 @@ async function main() {
 
         await tx`
           insert into transactions
-            (date, amount, category_id, kind, note, is_fixed, is_communal, is_estimated, source)
+            (user_id, date, amount, category_id, kind, note,
+             is_fixed, is_communal, is_estimated, source)
           values
-            (${r.date}, ${r.amount}, ${categoryId}, ${r.kind}, ${r.note},
+            (${userId}, ${r.date}, ${r.amount}, ${categoryId}, ${r.kind}, ${r.note},
              ${r.isFixed}, ${r.isCommunal}, ${r.isEstimated}, 'import')`;
         written += 1;
       }
 
       for (const s of SETTLEMENTS) {
-        const [exists] = await tx`select id from settlements where title = ${s.title}`;
+        const [exists] = await tx`
+          select id from settlements where user_id = ${userId} and title = ${s.title}`;
         if (exists) continue;
         await tx`
-          insert into settlements (title, expected_amount, direction, status, note)
-          values (${s.title}, ${s.expected}, ${s.direction}, 'open', ${s.note})`;
+          insert into settlements (user_id, title, expected_amount, direction, status, note)
+          values (${userId}, ${s.title}, ${s.expected}, ${s.direction}, 'open', ${s.note})`;
       }
     });
 

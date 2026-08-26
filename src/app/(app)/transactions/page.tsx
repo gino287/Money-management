@@ -5,6 +5,7 @@ import { TransactionList } from '@/components/TransactionList';
 import type { TransactionKind } from '@/db/schema';
 import { currentMonth, formatMonth, formatMonthShort, shiftMonth } from '@/lib/format';
 import { getCategories, getTransactions, summarize } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,9 +26,11 @@ export default async function TransactionsPage({ searchParams }: PageProps<'/tra
   const search = one(params.q) ?? '';
   const estimatedOnly = one(params.estimated) === '1';
 
+  const user = await requireUser();
+
   // 同上，排隊查，不要一次開好幾條新連線（見首頁那段註解）
-  const categories = await getCategories({ activeOnly: false });
-  const rows = await getTransactions({
+  const categories = await getCategories(user.id, { activeOnly: false });
+  const rows = await getTransactions(user.id, {
     month,
     kind: kind || undefined,
     categoryId: categoryId || undefined,

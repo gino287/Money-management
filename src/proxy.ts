@@ -4,7 +4,12 @@ import { SESSION_COOKIE, verifySessionToken } from '@/lib/auth';
 
 /** Next 16 起這個檔案叫 proxy，就是以前的 middleware */
 export async function proxy(request: NextRequest) {
-  const isLoggedIn = await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value);
+  /*
+   * 這裡只確認「這張憑證是真的、還沒過期」，不確認那個人還在不在、有沒有被停用 ——
+   * proxy 跑在 edge，碰不得資料庫（理由見 src/lib/auth.ts 開頭）。
+   * 真正的身分確認在 src/lib/session.ts 的 currentUser()，每一頁都會走到。
+   */
+  const isLoggedIn = (await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value)) !== null;
   const { pathname, search } = request.nextUrl;
   const isLoginPage = pathname === '/login';
 

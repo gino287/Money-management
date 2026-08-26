@@ -8,22 +8,33 @@ import { db } from '@/db';
 import { transactionRevisions } from '@/db/schema';
 import { daysAgoISO, formatAmount, todayISO } from '@/lib/format';
 import { getCategories, getTransaction } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 export default async function EditTransactionPage({ params }: PageProps<'/transactions/[id]'>) {
   const { id } = await params;
+  const user = await requireUser();
+
+  /*
+   * 先確認這筆帳是你的，再查其他東西。
+   *
+   * 原本是三支查完才判斷 notFound —— 多人之後那個順序不能留：修改紀錄
+   * 只認 transaction_id，不知道那筆帳是誰的，等於別人的修改紀錄也照撈不誤。
+   * 雖然頁面最後還是會 404、撈回來的東西一個字都不會顯示出去，
+   * 但「查了不該查的資料，只是剛好沒印出來」不是一個能安心的狀態。
+   * 順便省掉 404 路徑上的兩支查詢。
+   */
+  const row = await getTransaction(user.id, id);
+  if (!row) notFound();
 
   // 排隊查，不要一次開好幾條新連線（見首頁那段註解）
-  const row = await getTransaction(id);
-  const categories = await getCategories({ activeOnly: false });
+  const categories = await getCategories(user.id, { activeOnly: false });
   const revisions = await db
     .select()
     .from(transactionRevisions)
     .where(eq(transactionRevisions.transactionId, id))
     .orderBy(desc(transactionRevisions.changedAt));
-
-  if (!row) notFound();
 
   const categoryNames = new Map(categories.map((c) => [c.id, c.name]));
 

@@ -41,17 +41,22 @@ cp .env.example .env.local
 | 變數 | 怎麼來 |
 |---|---|
 | `DATABASE_URL` | 上一步複製的連線字串 |
-| `APP_PASSWORD` | 自己想一組登入密碼 |
+| `APP_PASSWORD` | 第一個帳號的密碼。只在建帳號那一次用到，之後密碼存在資料庫裡 |
+| `OWNER_NAME` | 第一個帳號叫什麼（登入時要打的）。留空就是 `Gino` |
 | `AUTH_SECRET` | 跑 `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | `DEEPSEEK_API_KEY` | P2 才用得到，先留空 |
 
-### 3. 建表、灌分類
+### 3. 建表、開帳號、灌分類
 
 ```bash
 npm install
-npm run db:push    # 建立五張資料表
-npm run db:seed    # 灌入規格書上的分類
+npm run db:push                  # 建立資料表
+npm run db:multiuser -- --write  # 建 users 表，用 APP_PASSWORD 開出第一個帳號
+npm run db:seed                  # 灌入規格書上的分類
 ```
+
+`db:multiuser` 不加 `--write` 就只印出「會做什麼」，不碰資料庫。
+**已經有舊資料的話務必先這樣預演一次**，它會告訴你有幾筆帳要歸給誰。
 
 ### 4. 跑起來
 
@@ -59,7 +64,21 @@ npm run db:seed    # 灌入規格書上的分類
 npm run dev
 ```
 
-開 <http://localhost:3000>，用 `APP_PASSWORD` 登入。
+開 <http://localhost:3000>，名字打 `OWNER_NAME`（預設 `Gino`）、密碼打 `APP_PASSWORD`。
+
+### 5. 要給家人用的話
+
+一個人一本完全獨立的帳，彼此看不到對方的東西。網站上沒有註冊頁面，用指令開：
+
+```bash
+npm run user -- add 媽媽      # 印出自動產生的密碼，只會出現這一次
+npm run user -- list          # 看現在有哪些人
+npm run user -- passwd 媽媽    # 重設密碼
+```
+
+LINE 不用一人開一支機器人 —— 同一支就能服務所有人。
+請對方加好友、隨便傳一句話，機器人會回他自己的代號，再用
+`npm run user -- line 媽媽 U開頭那串` 綁上去。
 
 ---
 
@@ -114,7 +133,7 @@ docs/             規格書、實作計畫、踩過的雷
 
 ## 目前進度
 
-- [x] **P0** 骨架、資料模型、密碼登入
+- [x] **P0** 骨架、資料模型、登入
 - [x] **P1** 手動記帳、明細與篩選、事後修改（留稽核）、分類管理、待結清追蹤、PWA
 - [ ] **P2** 口語輸入（DeepSeek）
 - [ ] **P3** LINE Bot、每日提醒、桌面快捷鍵、離線記帳佇列

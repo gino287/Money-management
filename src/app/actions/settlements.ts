@@ -1,6 +1,6 @@
 'use server';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '@/db';
@@ -11,6 +11,7 @@ import {
   type SettlementDirection,
 } from '@/db/schema';
 import { getCategory, getSettlements } from '@/lib/queries';
+import { requireUser } from '@/lib/session';
 import { todayISO } from '@/lib/format';
 
 import type { ActionState } from './transactions';
@@ -22,6 +23,10 @@ function revalidateAll() {
   revalidatePath('/');
   revalidatePath('/settlements');
 }
+
+/** 「這個待結清項目是不是你的」。結清、還原、刪除、改到期月都要先過這一關 */
+const ownedBy = (userId: string, id: string) =>
+  and(eq(settlements.id, id), eq(settlements.userId, userId));
 
 export async function createSettlement(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const title = String(formData.get('title') ?? '').trim();
@@ -42,7 +47,10 @@ export async function createSettlement(_prev: ActionState, formData: FormData): 
   const due = String(formData.get('dueMonth') ?? '').trim();
   if (due !== '' && !DUE_MONTH.test(due)) return { error: '預計時間格式不對' };
 
+  const user = await requireUser();
+
   await db.insert(settlements).values({
+    userId: user.id,
     title,
     direction,
     expectedAmount,
@@ -62,10 +70,12 @@ export async function settleSettlement(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   if (!id) return;
 
+  const user = await requireUser();
+
   await db
     .update(settlements)
     .set({ status: 'settled', settledAt: new Date() })
-    .where(eq(settlements.id, id));
+    .where(ownedBy(user.id, id));
   revalidateAll();
 }
 
@@ -74,10 +84,12 @@ export async function reopenSettlement(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   if (!id) return;
 
+  const user = await requireUser();
+
   await db
     .update(settlements)
     .set({ status: 'open', settledAt: null })
-    .where(eq(settlements.id, id));
+    .where(ownedBy(user.id, id));
   revalidateAll();
 }
 
@@ -85,7 +97,9 @@ export async function deleteSettlement(formData: FormData) {
   const id = String(formData.get('id') ?? '');
   if (!id) return;
 
-  await db.delete(settlements).where(eq(settlements.id, id));
+  const user = await requireUser();
+
+  await db.delete(settlements).where(ownedBy(user.id, id));
   revalidateAll();
 }
 
@@ -102,10 +116,12 @@ export async function setSettlementDue(formData: FormData) {
   const due = String(formData.get('dueMonth') ?? '').trim();
   if (due !== '' && !DUE_MONTH.test(due)) return;
 
+  const user = await requireUser();
+
   await db
     .update(settlements)
     .set({ dueMonth: due || null })
-    .where(eq(settlements.id, id));
+    .where(ownedBy(user.id, id));
   revalidateAll();
 }
 
@@ -124,8 +140,11 @@ export async function recordSettlementReturn(
   _prev: ActionState,
   formData: FormData,
 ): Promise<ActionState> {
+  const user = await requireUser();
+
   const id = String(formData.get('id') ?? '');
-  const all = await getSettlements();
+  // 只在自己的清單裡找，所以別人的項目編號在這裡等同於不存在
+  const all = await getSettlements(user.id);
   const item = all.find((s) => s.id === id);
   if (!item) return { error: '找不到這個待結清項目' };
 
@@ -137,7 +156,7 @@ export async function recordSettlementReturn(
   if (!ISO_DATE.test(date)) return { error: '日期格式不對' };
 
   const categoryId = String(formData.get('categoryId') ?? '');
-  const category = await getCategory(categoryId);
+  const category = await getCategory(user.id, categoryId);
   if (!category) return { error: '請選一個分類' };
 
   /*
@@ -151,6 +170,7 @@ export async function recordSettlementReturn(
   }
 
   await db.insert(transactions).values({
+    userId: user.id,
     date,
     amount: Math.round(amount * 100) / 100,
     categoryId,
